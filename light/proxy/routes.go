@@ -45,7 +45,7 @@ func RPCRoutes(c *lrpc.Client) map[string]*rpcserver.RPCFunc {
 		"abci_info":  rpcserver.NewRPCFunc(makeABCIInfoFunc(c), ""),
 
 		// evidence API
-		"broadcast_evidence": rpcserver.NewRPCFunc(makeBroadcastEvidenceFunc(c), "evidence"),
+		"broadcast_evidence": rpcserver.NewRPCFunc(makeBroadcastHeaderTraceFunc(c), "evidence"),
 	}
 }
 
@@ -229,11 +229,11 @@ func makeABCIInfoFunc(c *lrpc.Client) rpcABCIInfoFunc {
 	}
 }
 
-type rpcBroadcastEvidenceFunc func(ctx *rpctypes.Context, ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error)
+type rpcBroadcastEvidenceFunc func(ctx *rpctypes.Context, trace *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error)
 
 // nolint: interfacer
-func makeBroadcastEvidenceFunc(c *lrpc.Client) rpcBroadcastEvidenceFunc {
-	return func(ctx *rpctypes.Context, ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error) {
-		return c.BroadcastEvidence(ev)
+func makeBroadcastHeaderTraceFunc(c *lrpc.Client) rpcBroadcastEvidenceFunc {
+	return func(ctx *rpctypes.Context, trace *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error) {
+		return c.BroadcastHeaderTrace(trace)
 	}
 }

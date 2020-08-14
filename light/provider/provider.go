@@ -34,5 +34,5 @@ type Provider interface {
 	ValidatorSet(height int64) (*types.ValidatorSet, error)
 
 	// ReportEvidence reports an evidence of misbehavior.
-	ReportEvidence(ev types.Evidence) error
+	ReportEvidence(cht *types.ConflictingHeadersTrace) error
 }

@@ -478,8 +478,9 @@ func (c *Client) Validators(height *int64, page, perPage *int) (*ctypes.ResultVa
 	return res, nil
 }
 
-func (c *Client) BroadcastEvidence(ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error) {
-	return c.next.BroadcastEvidence(ev)
+// NOTE: Do we need light client to be able to offer this api
+func (c *Client) BroadcastHeaderTrace(trace *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error) {
+	return c.next.BroadcastHeaderTrace(trace)
 }
 
 func (c *Client) Subscribe(ctx context.Context, subscriber, query string,

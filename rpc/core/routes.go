@@ -42,7 +42,7 @@ var Routes = map[string]*rpc.RPCFunc{
 	"abci_info":  rpc.NewRPCFunc(ABCIInfo, ""),
 
 	// evidence API
-	"broadcast_evidence": rpc.NewRPCFunc(BroadcastEvidence, "evidence"),
+	"broadcast_header_trace": rpc.NewRPCFunc(BroadcastHeaderTrace, "evidence"),
 }
 
 func AddUnsafeRoutes() {

@@ -5,7 +5,6 @@ package evidence
 
 import (
 	fmt "fmt"
-	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
 	types "github.com/tendermint/tendermint/proto/tendermint/types"
 	io "io"
@@ -68,24 +67,25 @@ func (m *List) GetEvidence() []*types.Evidence {
 	return nil
 }
 
-type Info struct {
-	Committed bool           `protobuf:"varint,1,opt,name=committed,proto3" json:"committed,omitempty"`
-	Priority  int64          `protobuf:"varint,2,opt,name=priority,proto3" json:"priority,omitempty"`
-	Evidence  types.Evidence `protobuf:"bytes,3,opt,name=evidence,proto3" json:"evidence"`
+type Message struct {
+	// Types that are valid to be assigned to Sum:
+	//	*Message_List
+	//	*Message_ConflictingHeadersTrace
+	Sum isMessage_Sum `protobuf_oneof:"sum"`
 }
 
-func (m *Info) Reset()         { *m = Info{} }
-func (m *Info) String() string { return proto.CompactTextString(m) }
-func (*Info) ProtoMessage()    {}
-func (*Info) Descriptor() ([]byte, []int) {
+func (m *Message) Reset()         { *m = Message{} }
+func (m *Message) String() string { return proto.CompactTextString(m) }
+func (*Message) ProtoMessage()    {}
+func (*Message) Descriptor() ([]byte, []int) {
 	return fileDescriptor_5e804d1c041a0e47, []int{1}
 }
-func (m *Info) XXX_Unmarshal(b []byte) error {
+func (m *Message) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *Info) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *Message) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_Info.Marshal(b, m, deterministic)
+		return xxx_messageInfo_Message.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -95,64 +95,89 @@ func (m *Info) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 		return b[:n], nil
 	}
 }
-func (m *Info) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_Info.Merge(m, src)
+func (m *Message) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_Message.Merge(m, src)
 }
-func (m *Info) XXX_Size() int {
+func (m *Message) XXX_Size() int {
 	return m.Size()
 }
-func (m *Info) XXX_DiscardUnknown() {
-	xxx_messageInfo_Info.DiscardUnknown(m)
+func (m *Message) XXX_DiscardUnknown() {
+	xxx_messageInfo_Message.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_Info proto.InternalMessageInfo
+var xxx_messageInfo_Message proto.InternalMessageInfo
 
-func (m *Info) GetCommitted() bool {
-	if m != nil {
-		return m.Committed
-	}
-	return false
+type isMessage_Sum interface {
+	isMessage_Sum()
+	MarshalTo([]byte) (int, error)
+	Size() int
 }
 
-func (m *Info) GetPriority() int64 {
-	if m != nil {
-		return m.Priority
-	}
-	return 0
+type Message_List struct {
+	List *List `protobuf:"bytes,1,opt,name=list,proto3,oneof" json:"list,omitempty"`
+}
+type Message_ConflictingHeadersTrace struct {
+	ConflictingHeadersTrace *types.ConflictingHeadersTrace `protobuf:"bytes,2,opt,name=conflicting_headers_trace,json=conflictingHeadersTrace,proto3,oneof" json:"conflicting_headers_trace,omitempty"`
 }
 
-func (m *Info) GetEvidence() types.Evidence {
+func (*Message_List) isMessage_Sum()                    {}
+func (*Message_ConflictingHeadersTrace) isMessage_Sum() {}
+
+func (m *Message) GetSum() isMessage_Sum {
 	if m != nil {
-		return m.Evidence
+		return m.Sum
 	}
-	return types.Evidence{}
+	return nil
+}
+
+func (m *Message) GetList() *List {
+	if x, ok := m.GetSum().(*Message_List); ok {
+		return x.List
+	}
+	return nil
+}
+
+func (m *Message) GetConflictingHeadersTrace() *types.ConflictingHeadersTrace {
+	if x, ok := m.GetSum().(*Message_ConflictingHeadersTrace); ok {
+		return x.ConflictingHeadersTrace
+	}
+	return nil
+}
+
+// XXX_OneofWrappers is for the internal use of the proto package.
+func (*Message) XXX_OneofWrappers() []interface{} {
+	return []interface{}{
+		(*Message_List)(nil),
+		(*Message_ConflictingHeadersTrace)(nil),
+	}
 }
 
 func init() {
 	proto.RegisterType((*List)(nil), "tendermint.evidence.List")
-	proto.RegisterType((*Info)(nil), "tendermint.evidence.Info")
+	proto.RegisterType((*Message)(nil), "tendermint.evidence.Message")
 }
 
 func init() { proto.RegisterFile("tendermint/evidence/types.proto", fileDescriptor_5e804d1c041a0e47) }
 
 var fileDescriptor_5e804d1c041a0e47 = []byte{
-	// 243 bytes of a gzipped FileDescriptorProto
+	// 261 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x92, 0x2f, 0x49, 0xcd, 0x4b,
 	0x49, 0x2d, 0xca, 0xcd, 0xcc, 0x2b, 0xd1, 0x4f, 0x2d, 0xcb, 0x4c, 0x49, 0xcd, 0x4b, 0x4e, 0xd5,
 	0x2f, 0xa9, 0x2c, 0x48, 0x2d, 0xd6, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17, 0x12, 0x46, 0x28, 0xd0,
-	0x83, 0x29, 0x90, 0x12, 0x49, 0xcf, 0x4f, 0xcf, 0x07, 0xcb, 0xeb, 0x83, 0x58, 0x10, 0xa5, 0x52,
-	0xc8, 0x66, 0x81, 0x8d, 0x80, 0x9b, 0x08, 0x51, 0xa0, 0x64, 0xc7, 0xc5, 0xe2, 0x93, 0x59, 0x5c,
-	0x22, 0x64, 0xc6, 0xc5, 0x01, 0x93, 0x91, 0x60, 0x54, 0x60, 0xd6, 0xe0, 0x36, 0x92, 0xd2, 0x43,
-	0xb2, 0x06, 0x62, 0xbd, 0x2b, 0x54, 0x45, 0x10, 0x5c, 0xad, 0x52, 0x1d, 0x17, 0x8b, 0x67, 0x5e,
-	0x5a, 0xbe, 0x90, 0x0c, 0x17, 0x67, 0x72, 0x7e, 0x6e, 0x6e, 0x66, 0x49, 0x49, 0x6a, 0x8a, 0x04,
-	0xa3, 0x02, 0xa3, 0x06, 0x47, 0x10, 0x42, 0x40, 0x48, 0x8a, 0x8b, 0xa3, 0xa0, 0x28, 0x33, 0xbf,
-	0x28, 0xb3, 0xa4, 0x52, 0x82, 0x49, 0x81, 0x51, 0x83, 0x39, 0x08, 0xce, 0x17, 0xb2, 0x41, 0xb2,
-	0x99, 0x59, 0x81, 0x11, 0xbf, 0xcd, 0x4e, 0x2c, 0x27, 0xee, 0xc9, 0x33, 0x20, 0xec, 0x77, 0x0a,
-	0x39, 0xf1, 0x48, 0x8e, 0xf1, 0xc2, 0x23, 0x39, 0xc6, 0x07, 0x8f, 0xe4, 0x18, 0x27, 0x3c, 0x96,
-	0x63, 0xb8, 0xf0, 0x58, 0x8e, 0xe1, 0xc6, 0x63, 0x39, 0x86, 0x28, 0xab, 0xf4, 0xcc, 0x92, 0x8c,
-	0xd2, 0x24, 0xbd, 0xe4, 0xfc, 0x5c, 0x7d, 0xe4, 0x50, 0x40, 0x30, 0x21, 0xa1, 0x85, 0x25, 0xb4,
-	0x93, 0xd8, 0xc0, 0x52, 0xc6, 0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0xba, 0x95, 0x45, 0x68, 0x8b,
-	0x01, 0x00, 0x00,
+	0x83, 0x29, 0x90, 0x42, 0xd6, 0x05, 0x56, 0x0c, 0xd7, 0x0b, 0xd1, 0xa5, 0x64, 0xc7, 0xc5, 0xe2,
+	0x93, 0x59, 0x5c, 0x22, 0x64, 0xc6, 0xc5, 0x01, 0x93, 0x91, 0x60, 0x54, 0x60, 0xd6, 0xe0, 0x36,
+	0x92, 0xd2, 0x43, 0x32, 0x10, 0x62, 0x91, 0x2b, 0x54, 0x45, 0x10, 0x5c, 0xad, 0xd2, 0x2a, 0x46,
+	0x2e, 0x76, 0xdf, 0xd4, 0xe2, 0xe2, 0xc4, 0xf4, 0x54, 0x21, 0x7d, 0x2e, 0x96, 0x9c, 0xcc, 0xe2,
+	0x12, 0x09, 0x46, 0x05, 0x46, 0x0d, 0x6e, 0x23, 0x49, 0x3d, 0x2c, 0x0e, 0xd2, 0x03, 0x59, 0xe6,
+	0xc1, 0x10, 0x04, 0x56, 0x28, 0x94, 0xce, 0x25, 0x99, 0x9c, 0x9f, 0x97, 0x96, 0x93, 0x99, 0x5c,
+	0x92, 0x99, 0x97, 0x1e, 0x9f, 0x91, 0x9a, 0x98, 0x92, 0x5a, 0x54, 0x1c, 0x5f, 0x52, 0x94, 0x98,
+	0x9c, 0x2a, 0xc1, 0x04, 0x36, 0x45, 0x13, 0xd3, 0x15, 0xce, 0x08, 0x2d, 0x1e, 0x10, 0x1d, 0x21,
+	0x20, 0x0d, 0x1e, 0x0c, 0x41, 0xe2, 0xc9, 0xd8, 0xa5, 0x9c, 0x58, 0xb9, 0x98, 0x8b, 0x4b, 0x73,
+	0x9d, 0x42, 0x4e, 0x3c, 0x92, 0x63, 0xbc, 0xf0, 0x48, 0x8e, 0xf1, 0xc1, 0x23, 0x39, 0xc6, 0x09,
+	0x8f, 0xe5, 0x18, 0x2e, 0x3c, 0x96, 0x63, 0xb8, 0xf1, 0x58, 0x8e, 0x21, 0xca, 0x2a, 0x3d, 0xb3,
+	0x24, 0xa3, 0x34, 0x49, 0x2f, 0x39, 0x3f, 0x57, 0x1f, 0x39, 0xc8, 0x10, 0x4c, 0x70, 0x70, 0xe9,
+	0x63, 0x89, 0x84, 0x24, 0x36, 0xb0, 0x94, 0x31, 0x20, 0x00, 0x00, 0xff, 0xff, 0x43, 0xaa, 0xfc,
+	0xb2, 0xa2, 0x01, 0x00, 0x00,
 }
 
 func (m *List) Marshal() (dAtA []byte, err error) {
@@ -192,7 +217,7 @@ func (m *List) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *Info) Marshal() (dAtA []byte, err error) {
+func (m *Message) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -202,44 +227,70 @@ func (m *Info) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *Info) MarshalTo(dAtA []byte) (int, error) {
+func (m *Message) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *Info) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *Message) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
-	{
-		size, err := m.Evidence.MarshalToSizedBuffer(dAtA[:i])
-		if err != nil {
-			return 0, err
+	if m.Sum != nil {
+		{
+			size := m.Sum.Size()
+			i -= size
+			if _, err := m.Sum.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
 		}
-		i -= size
-		i = encodeVarintTypes(dAtA, i, uint64(size))
-	}
-	i--
-	dAtA[i] = 0x1a
-	if m.Priority != 0 {
-		i = encodeVarintTypes(dAtA, i, uint64(m.Priority))
-		i--
-		dAtA[i] = 0x10
-	}
-	if m.Committed {
-		i--
-		if m.Committed {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
 
+func (m *Message_List) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *Message_List) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.List != nil {
+		{
+			size, err := m.List.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintTypes(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+func (m *Message_ConflictingHeadersTrace) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *Message_ConflictingHeadersTrace) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.ConflictingHeadersTrace != nil {
+		{
+			size, err := m.ConflictingHeadersTrace.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintTypes(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x12
+	}
+	return len(dAtA) - i, nil
+}
 func encodeVarintTypes(dAtA []byte, offset int, v uint64) int {
 	offset -= sovTypes(v)
 	base := offset
@@ -266,20 +317,40 @@ func (m *List) Size() (n int) {
 	return n
 }
 
-func (m *Info) Size() (n int) {
+func (m *Message) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Committed {
-		n += 2
+	if m.Sum != nil {
+		n += m.Sum.Size()
 	}
-	if m.Priority != 0 {
-		n += 1 + sovTypes(uint64(m.Priority))
+	return n
+}
+
+func (m *Message_List) Size() (n int) {
+	if m == nil {
+		return 0
 	}
-	l = m.Evidence.Size()
-	n += 1 + l + sovTypes(uint64(l))
+	var l int
+	_ = l
+	if m.List != nil {
+		l = m.List.Size()
+		n += 1 + l + sovTypes(uint64(l))
+	}
+	return n
+}
+func (m *Message_ConflictingHeadersTrace) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ConflictingHeadersTrace != nil {
+		l = m.ConflictingHeadersTrace.Size()
+		n += 1 + l + sovTypes(uint64(l))
+	}
 	return n
 }
 
@@ -376,7 +447,7 @@ func (m *List) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *Info) Unmarshal(dAtA []byte) error {
+func (m *Message) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -399,54 +470,15 @@ func (m *Info) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: Info: wiretype end group for non-group")
+			return fmt.Errorf("proto: Message: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: Info: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: Message: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Committed", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowTypes
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			m.Committed = bool(v != 0)
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Priority", wireType)
-			}
-			m.Priority = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowTypes
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Priority |= int64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 3:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Evidence", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field List", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -473,9 +505,46 @@ func (m *Info) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if err := m.Evidence.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+			v := &List{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			m.Sum = &Message_List{v}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ConflictingHeadersTrace", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTypes
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthTypes
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthTypes
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &types.ConflictingHeadersTrace{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Sum = &Message_ConflictingHeadersTrace{v}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

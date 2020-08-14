@@ -121,7 +121,7 @@ type MempoolClient interface {
 // EvidenceClient is used for submitting an evidence of the malicious
 // behaviour.
 type EvidenceClient interface {
-	BroadcastEvidence(ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error)
+	BroadcastHeaderTrace(trace *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error)
 }
 
 // RemoteClient is a Client, which can also return the remote network address.

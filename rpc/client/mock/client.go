@@ -166,6 +166,6 @@ func (c Client) Validators(height *int64, page, perPage *int) (*ctypes.ResultVal
 	return core.Validators(&rpctypes.Context{}, height, page, perPage)
 }
 
-func (c Client) BroadcastEvidence(ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error) {
-	return core.BroadcastEvidence(&rpctypes.Context{}, ev)
+func (c Client) BroadcastHeaderTrace(trace *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error) {
+	return core.BroadcastHeaderTrace(&rpctypes.Context{}, trace)
 }

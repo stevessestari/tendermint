@@ -173,8 +173,8 @@ func (c *Local) TxSearch(query string, prove bool, page, perPage *int, orderBy s
 	return core.TxSearch(c.ctx, query, prove, page, perPage, orderBy)
 }
 
-func (c *Local) BroadcastEvidence(ev types.Evidence) (*ctypes.ResultBroadcastEvidence, error) {
-	return core.BroadcastEvidence(c.ctx, ev)
+func (c *Local) BroadcastHeaderTrace(ev *types.ConflictingHeadersTrace) (*ctypes.ResultBroadcastEvidence, error) {
+	return core.BroadcastHeaderTrace(c.ctx, ev)
 }
 
 func (c *Local) Subscribe(

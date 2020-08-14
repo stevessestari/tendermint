@@ -17,9 +17,33 @@ import (
 	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 )
 
+// Evidence represents any provable malicious activity by a validator.
+type Evidence interface {
+	Height() int64                                     // height of the equivocation
+	Time() time.Time                                   // time of the equivocation
+	Address() []byte                                   // address of the equivocating validator
+	Bytes() []byte                                     // bytes which comprise the evidence
+	Hash() []byte                                      // hash of the evidence
+	Verify(chainID string, pubKey crypto.PubKey) error // verify the evidence
+	Equal(Evidence) bool                               // check equality of evidence
+
+	ValidateBasic() error
+	String() string
+}
+
+// type CompositeEvidence interface {
+// 	VerifyComposite(committedHeader *Header, valSet *ValidatorSet) error
+// 	Split(committedHeader *Header, valSet *ValidatorSet) []Evidence
+// }
+
 const (
-	// MaxEvidenceBytes is a maximum size of any evidence (including amino overhead).
+	// MaxEvidenceBytes is a maximum size of any evidence.
 	MaxEvidenceBytes int64 = 444
+	
+	// The theoretical upper bound on a trace size i.e. a light client that has to verify every
+	// header in a two week period at 1 block/s would be over a million blocks. In practice we can
+	// expect and cap at a much lower amount
+	MaxTraceSize = 200
 
 	// An invalid field in the header from LunaticValidatorEvidence.
 	// Must be a function of the ABCI application state.
@@ -62,113 +86,9 @@ func (err *ErrEvidenceOverflow) Error() string {
 	return fmt.Sprintf("Too much evidence: Max %d, got %d", err.MaxNum, err.GotNum)
 }
 
-//-------------------------------------------
-
-// Evidence represents any provable malicious activity by a validator.
-type Evidence interface {
-	Height() int64                                     // height of the equivocation
-	Time() time.Time                                   // time of the equivocation
-	Address() []byte                                   // address of the equivocating validator
-	Bytes() []byte                                     // bytes which comprise the evidence
-	Hash() []byte                                      // hash of the evidence
-	Verify(chainID string, pubKey crypto.PubKey) error // verify the evidence
-	Equal(Evidence) bool                               // check equality of evidence
-
-	ValidateBasic() error
-	String() string
-}
-
-type CompositeEvidence interface {
-	VerifyComposite(committedHeader *Header, valSet *ValidatorSet) error
-	Split(committedHeader *Header, valSet *ValidatorSet) []Evidence
-}
-
-func EvidenceToProto(evidence Evidence) (*tmproto.Evidence, error) {
-	if evidence == nil {
-		return nil, errors.New("nil evidence")
-	}
-
-	switch evi := evidence.(type) {
-	case *DuplicateVoteEvidence:
-		pbevi := evi.ToProto()
-		tp := &tmproto.Evidence{
-			Sum: &tmproto.Evidence_DuplicateVoteEvidence{
-				DuplicateVoteEvidence: pbevi,
-			},
-		}
-		return tp, nil
-
-	case *ConflictingHeadersEvidence:
-		pbevi := evi.ToProto()
-
-		tp := &tmproto.Evidence{
-			Sum: &tmproto.Evidence_ConflictingHeadersEvidence{
-				ConflictingHeadersEvidence: pbevi,
-			},
-		}
-
-		return tp, nil
-	case *LunaticValidatorEvidence:
-		pbevi := evi.ToProto()
-
-		tp := &tmproto.Evidence{
-			Sum: &tmproto.Evidence_LunaticValidatorEvidence{
-				LunaticValidatorEvidence: pbevi,
-			},
-		}
-
-		return tp, nil
-
-	case *PotentialAmnesiaEvidence:
-		pbevi := evi.ToProto()
-
-		tp := &tmproto.Evidence{
-			Sum: &tmproto.Evidence_PotentialAmnesiaEvidence{
-				PotentialAmnesiaEvidence: pbevi,
-			},
-		}
-
-		return tp, nil
-
-	case *AmnesiaEvidence:
-		aepb := evi.ToProto()
-
-		tp := &tmproto.Evidence{
-			Sum: &tmproto.Evidence_AmnesiaEvidence{
-				AmnesiaEvidence: aepb,
-			},
-		}
-
-		return tp, nil
-	default:
-		return nil, fmt.Errorf("toproto: evidence is not recognized: %T", evi)
-	}
-}
-
-func EvidenceFromProto(evidence *tmproto.Evidence) (Evidence, error) {
-	if evidence == nil {
-		return nil, errors.New("nil evidence")
-	}
-
-	switch evi := evidence.Sum.(type) {
-	case *tmproto.Evidence_DuplicateVoteEvidence:
-		return DuplicateVoteEvidenceFromProto(evi.DuplicateVoteEvidence)
-	case *tmproto.Evidence_ConflictingHeadersEvidence:
-		return ConflictingHeadersEvidenceFromProto(evi.ConflictingHeadersEvidence)
-	case *tmproto.Evidence_LunaticValidatorEvidence:
-		return LunaticValidatorEvidenceFromProto(evi.LunaticValidatorEvidence)
-	case *tmproto.Evidence_PotentialAmnesiaEvidence:
-		return PotentialAmnesiaEvidenceFromProto(evi.PotentialAmnesiaEvidence)
-	case *tmproto.Evidence_AmnesiaEvidence:
-		return AmnesiaEvidenceFromProto(evi.AmnesiaEvidence)
-	default:
-		return nil, errors.New("evidence is not recognized")
-	}
-}
-
 func init() {
 	tmjson.RegisterType(&DuplicateVoteEvidence{}, "tendermint/DuplicateVoteEvidence")
-	tmjson.RegisterType(&ConflictingHeadersEvidence{}, "tendermint/ConflictingHeadersEvidence")
+	tmjson.RegisterType(&ConflictingHeadersTrace{}, "tendermint/ConflictingHeadersTrace")
 	tmjson.RegisterType(&LunaticValidatorEvidence{}, "tendermint/LunaticValidatorEvidence")
 	tmjson.RegisterType(&PotentialAmnesiaEvidence{}, "tendermint/PotentialAmnesiaEvidence")
 	tmjson.RegisterType(&AmnesiaEvidence{}, "tendermint/AmnesiaEvidence")
@@ -214,7 +134,7 @@ func (dve *DuplicateVoteEvidence) String() string {
 	return fmt.Sprintf("DuplicateVoteEvidence{VoteA: %v, VoteB: %v, Time: %v}", dve.VoteA, dve.VoteB, dve.Timestamp)
 }
 
-// Height returns the height this evidence refers to.
+// Height returns the height of both votes.
 func (dve *DuplicateVoteEvidence) Height() int64 {
 	return dve.VoteA.Height
 }
@@ -229,7 +149,6 @@ func (dve *DuplicateVoteEvidence) Address() []byte {
 	return dve.VoteA.ValidatorAddress
 }
 
-// Hash returns the hash of the evidence.
 func (dve *DuplicateVoteEvidence) Bytes() []byte {
 	pbe := dve.ToProto()
 	bz, err := pbe.Marshal()
@@ -242,13 +161,7 @@ func (dve *DuplicateVoteEvidence) Bytes() []byte {
 
 // Hash returns the hash of the evidence.
 func (dve *DuplicateVoteEvidence) Hash() []byte {
-	pbe := dve.ToProto()
-	bz, err := pbe.Marshal()
-	if err != nil {
-		panic(err)
-	}
-
-	return tmhash.Sum(bz)
+	return tmhash.Sum(dve.Bytes())
 }
 
 // Verify returns an error if the two votes aren't conflicting.
@@ -379,293 +292,19 @@ func DuplicateVoteEvidenceFromProto(pb *tmproto.DuplicateVoteEvidence) (*Duplica
 	return dve, dve.ValidateBasic()
 }
 
-// ConflictingHeadersEvidence is primarily used by the light client when it
-// observes two conflicting headers, both having 1/3+ of the voting power of
-// the currently trusted validator set.
-type ConflictingHeadersEvidence struct {
-	H1 *SignedHeader `json:"h_1"`
-	H2 *SignedHeader `json:"h_2"`
-}
-
-var _ Evidence = &ConflictingHeadersEvidence{}
-var _ CompositeEvidence = &ConflictingHeadersEvidence{}
-
-// NewConflictingHeadersEvidence creates a new instance of the respective evidence
-func NewConflictingHeadersEvidence(h1, h2 *SignedHeader) *ConflictingHeadersEvidence {
-	return &ConflictingHeadersEvidence{H1: h1, H2: h2}
-}
-
-// Split breaks up evidence into smaller chunks of evidence:
-// LunaticValidatorEvidence, DuplicateVoteEvidence and
-// PotentialAmnesiaEvidence.
-//
-// committedHeader - header at height H1.Height == H2.Height
-// valSet					 - validator set at height H1.Height == H2.Height
-func (ev *ConflictingHeadersEvidence) Split(committedHeader *Header, valSet *ValidatorSet) []Evidence {
-	evList := make([]Evidence, 0)
-
-	var alternativeHeader *SignedHeader
-	if bytes.Equal(committedHeader.Hash(), ev.H1.Hash()) {
-		alternativeHeader = ev.H2
-	} else {
-		alternativeHeader = ev.H1
-	}
-
-	// If ValidatorsHash, NextValidatorsHash, ConsensusHash, AppHash, and
-	// LastResultsHash in alternativeHeader are different (incorrect application
-	// state transition), then it is a lunatic misbehavior => immediately
-	// slashable (#F5).
-	var invalidField string
-	switch {
-	case !bytes.Equal(committedHeader.ValidatorsHash, alternativeHeader.ValidatorsHash):
-		invalidField = "ValidatorsHash"
-	case !bytes.Equal(committedHeader.NextValidatorsHash, alternativeHeader.NextValidatorsHash):
-		invalidField = "NextValidatorsHash"
-	case !bytes.Equal(committedHeader.ConsensusHash, alternativeHeader.ConsensusHash):
-		invalidField = "ConsensusHash"
-	case !bytes.Equal(committedHeader.AppHash, alternativeHeader.AppHash):
-		invalidField = "AppHash"
-	case !bytes.Equal(committedHeader.LastResultsHash, alternativeHeader.LastResultsHash):
-		invalidField = "LastResultsHash"
-	}
-	if invalidField != "" {
-		for i, sig := range alternativeHeader.Commit.Signatures {
-			if sig.Absent() {
-				continue
-			}
-			evList = append(evList, NewLunaticValidatorEvidence(
-				alternativeHeader.Header,
-				alternativeHeader.Commit.GetVote(int32(i)),
-				invalidField,
-				committedHeader.Time, //take the time of our own trusted header
-			))
-		}
-		return evList
-	}
-
-	// Use the fact that signatures are sorted by ValidatorAddress.
-	var (
-		i = 0
-		j = 0
-	)
-OUTER_LOOP:
-	for i < len(ev.H1.Commit.Signatures) {
-		sigA := ev.H1.Commit.Signatures[i]
-		if sigA.Absent() {
-			i++
-			continue
-		}
-		// FIXME: Replace with HasAddress once DuplicateVoteEvidence#PubKey is
-		// removed.
-		_, val := valSet.GetByAddress(sigA.ValidatorAddress)
-		if val == nil {
-			i++
-			continue
-		}
-
-		for j < len(ev.H2.Commit.Signatures) {
-			sigB := ev.H2.Commit.Signatures[j]
-			if sigB.Absent() {
-				j++
-				continue
-			}
-
-			switch bytes.Compare(sigA.ValidatorAddress, sigB.ValidatorAddress) {
-			case 0:
-				// if H1.Round == H2.Round, and some signers signed different precommit
-				// messages in both commits, then it is an equivocation misbehavior =>
-				// immediately slashable (#F1).
-				if ev.H1.Commit.Round == ev.H2.Commit.Round {
-					evList = append(evList, NewDuplicateVoteEvidence(
-						ev.H1.Commit.GetVote(int32(i)),
-						ev.H2.Commit.GetVote(int32(j)),
-						ev.H1.Time,
-					))
-				} else {
-					// if H1.Round != H2.Round we need to run full detection procedure => not
-					// immediately slashable.
-					firstVote := ev.H1.Commit.GetVote(int32(i))
-					secondVote := ev.H2.Commit.GetVote(int32(j))
-					newEv := NewPotentialAmnesiaEvidence(firstVote, secondVote, committedHeader.Time)
-
-					// has the validator incorrectly voted for a previous round
-					if newEv.VoteA.Round > newEv.VoteB.Round {
-						evList = append(evList, NewAmnesiaEvidence(newEv, NewEmptyPOLC()))
-					} else {
-						evList = append(evList, newEv)
-					}
-				}
-
-				i++
-				j++
-				continue OUTER_LOOP
-			case 1:
-				i++
-				continue OUTER_LOOP
-			case -1:
-				j++
-			}
-		}
-	}
-
-	return evList
-}
-
-func (ev *ConflictingHeadersEvidence) Height() int64 { return ev.H1.Height }
-
-// Time returns time of the latest header.
-func (ev *ConflictingHeadersEvidence) Time() time.Time {
-	return maxTime(ev.H1.Time, ev.H2.Time)
-}
-
-func (ev *ConflictingHeadersEvidence) Address() []byte {
-	panic("use ConflictingHeadersEvidence#Split to split evidence into individual pieces")
-}
-
-func (ev *ConflictingHeadersEvidence) Bytes() []byte {
-	pbe := ev.ToProto()
-
-	bz, err := pbe.Marshal()
-	if err != nil {
-		panic(err)
-	}
-
-	return bz
-}
-
-func (ev *ConflictingHeadersEvidence) Hash() []byte {
-	bz := make([]byte, tmhash.Size*2)
-	copy(bz[:tmhash.Size-1], ev.H1.Hash().Bytes())
-	copy(bz[tmhash.Size:], ev.H2.Hash().Bytes())
-	return tmhash.Sum(bz)
-}
-
-func (ev *ConflictingHeadersEvidence) Verify(chainID string, _ crypto.PubKey) error {
-	panic("use ConflictingHeadersEvidence#VerifyComposite to verify composite evidence")
-}
-
-// VerifyComposite verifies that both headers belong to the same chain, same
-// height and signed by 1/3+ of validators at height H1.Height == H2.Height.
-func (ev *ConflictingHeadersEvidence) VerifyComposite(committedHeader *Header, valSet *ValidatorSet) error {
-	var alternativeHeader *SignedHeader
-	switch {
-	case bytes.Equal(committedHeader.Hash(), ev.H1.Hash()):
-		alternativeHeader = ev.H2
-	case bytes.Equal(committedHeader.Hash(), ev.H2.Hash()):
-		alternativeHeader = ev.H1
-	default:
-		return errors.New("none of the headers are committed from this node's perspective")
-	}
-
-	// ChainID must be the same
-	if committedHeader.ChainID != alternativeHeader.ChainID {
-		return errors.New("alt header is from a different chain")
-	}
-
-	// Height must be the same
-	if committedHeader.Height != alternativeHeader.Height {
-		return errors.New("alt header is from a different height")
-	}
-
-	// Limit the number of signatures to avoid DoS attacks where a header
-	// contains too many signatures.
-	//
-	// Validator set size               = 100 [node]
-	// Max validator set size = 100 * 2 = 200 [fork?]
-	maxNumValidators := valSet.Size() * 2
-	if len(alternativeHeader.Commit.Signatures) > maxNumValidators {
-		return fmt.Errorf("alt commit contains too many signatures: %d, expected no more than %d",
-			len(alternativeHeader.Commit.Signatures),
-			maxNumValidators)
-	}
-
-	// Header must be signed by at least 1/3+ of voting power of currently
-	// trusted validator set.
-	if err := valSet.VerifyCommitLightTrusting(
-		alternativeHeader.ChainID,
-		alternativeHeader.Commit,
-		tmmath.Fraction{Numerator: 1, Denominator: 3}); err != nil {
-		return fmt.Errorf("alt header does not have 1/3+ of voting power of our validator set: %w", err)
-	}
-
-	return nil
-}
-
-func (ev *ConflictingHeadersEvidence) Equal(ev2 Evidence) bool {
-	if e2, ok := ev2.(*ConflictingHeadersEvidence); ok {
-		return bytes.Equal(ev.H1.Hash(), e2.H1.Hash()) && bytes.Equal(ev.H2.Hash(), e2.H2.Hash())
-	}
-
-	return false
-}
-
-func (ev *ConflictingHeadersEvidence) ValidateBasic() error {
-	if ev == nil {
-		return errors.New("empty conflicting headers evidence")
-	}
-
-	if ev.H1 == nil {
-		return errors.New("first header is missing")
-	}
-
-	if ev.H2 == nil {
-		return errors.New("second header is missing")
-	}
-
-	if err := ev.H1.ValidateBasic(ev.H1.ChainID); err != nil {
-		return fmt.Errorf("h1: %w", err)
-	}
-	if err := ev.H2.ValidateBasic(ev.H2.ChainID); err != nil {
-		return fmt.Errorf("h2: %w", err)
-	}
-	return nil
-}
-
-func (ev *ConflictingHeadersEvidence) String() string {
-	return fmt.Sprintf("ConflictingHeadersEvidence{H1: %d#%X, H2: %d#%X}",
-		ev.H1.Height, ev.H1.Hash(),
-		ev.H2.Height, ev.H2.Hash())
-}
-
-func (ev *ConflictingHeadersEvidence) ToProto() *tmproto.ConflictingHeadersEvidence {
-	pbh1 := ev.H1.ToProto()
-	pbh2 := ev.H2.ToProto()
-
-	tp := &tmproto.ConflictingHeadersEvidence{
-		H1: pbh1,
-		H2: pbh2,
-	}
-	return tp
-}
-
-func ConflictingHeadersEvidenceFromProto(pb *tmproto.ConflictingHeadersEvidence) (*ConflictingHeadersEvidence, error) {
-	if pb == nil {
-		return &ConflictingHeadersEvidence{}, errors.New("nil ConflictingHeadersEvidence")
-	}
-	h1, err := SignedHeaderFromProto(pb.H1)
-	if err != nil {
-		return &ConflictingHeadersEvidence{}, fmt.Errorf("from proto err: %w", err)
-	}
-	h2, err := SignedHeaderFromProto(pb.H2)
-	if err != nil {
-		return &ConflictingHeadersEvidence{}, fmt.Errorf("from proto err: %w", err)
-	}
-
-	tp := &ConflictingHeadersEvidence{
-		H1: h1,
-		H2: h2,
-	}
-
-	return tp, tp.ValidateBasic()
-}
-
 //-------------------------------------------
 
+
+// LunaticValidatorEvidence is used to capture an attack on a light client where at least
+// 1/3 of the validator set has abused the light clients bisection model in an attempt to 
+// make the light client trust an header that was invalidly derived. This means that either
+// ValidatorsHash, NextValidatorsHash, ConsensusHash, AppHash, or LastResultsHash is
+// different to the value that it should be. 
 type LunaticValidatorEvidence struct {
 	Header             *Header `json:"header"`
 	Vote               *Vote   `json:"vote"`
 	InvalidHeaderField string  `json:"invalid_header_field"`
-
+	ValidatorSourceHeight int64 `json:"validator_source_height"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -673,18 +312,21 @@ var _ Evidence = &LunaticValidatorEvidence{}
 
 // NewLunaticValidatorEvidence creates a new instance of the respective evidence
 func NewLunaticValidatorEvidence(header *Header,
-	vote *Vote, invalidHeaderField string, time time.Time) *LunaticValidatorEvidence {
+	vote *Vote, invalidHeaderField string, validatorSourceHeight int64, 
+	time time.Time) *LunaticValidatorEvidence {
 	return &LunaticValidatorEvidence{
 		Header:             header,
 		Vote:               vote,
 		InvalidHeaderField: invalidHeaderField,
-
+		ValidatorSourceHeight: validatorSourceHeight,
 		Timestamp: time,
 	}
 }
 
+// Height uses the validator source height as the validator may not be in the validator set 
+// at the height of the header
 func (e *LunaticValidatorEvidence) Height() int64 {
-	return e.Header.Height
+	return e.ValidatorSourceHeight
 }
 
 // Time returns the maximum between the header's time and vote's time.
@@ -1055,7 +697,27 @@ func (e *PotentialAmnesiaEvidence) ToProto() *tmproto.PotentialAmnesiaEvidence {
 	return tp
 }
 
-// ------------------
+func PotentialAmnesiaEvidenceFromProto(pb *tmproto.PotentialAmnesiaEvidence) (*PotentialAmnesiaEvidence, error) {
+	voteA, err := VoteFromProto(pb.GetVoteA())
+	if err != nil {
+		return nil, err
+	}
+
+	voteB, err := VoteFromProto(pb.GetVoteB())
+	if err != nil {
+		return nil, err
+	}
+	tp := PotentialAmnesiaEvidence{
+		VoteA:       voteA,
+		VoteB:       voteB,
+		HeightStamp: pb.GetHeightStamp(),
+		Timestamp:   pb.Timestamp,
+	}
+
+	return &tp, tp.ValidateBasic()
+}
+
+//---------------------------------------------------------------------
 
 // ProofOfLockChange (POLC) proves that a node followed the consensus protocol and voted for a precommit in two
 // different rounds because the node received a majority of votes for a different block in the latter round. In cases of
@@ -1065,7 +727,7 @@ type ProofOfLockChange struct {
 	PubKey crypto.PubKey `json:"pubkey"`
 }
 
-// MakePOLCFromVoteSet can be used when a majority of prevotes or precommits for a block is seen
+// NewPOLCFromVoteSet can be used when a majority of prevotes or precommits for a block is seen
 // that the node has itself not yet voted for in order to process the vote set into a proof of lock change
 func NewPOLCFromVoteSet(voteSet *VoteSet, pubKey crypto.PubKey, blockID BlockID) (*ProofOfLockChange, error) {
 	polc := newPOLCFromVoteSet(voteSet, pubKey, blockID)
@@ -1095,7 +757,7 @@ func NewPOLC(votes []*Vote, pubKey crypto.PubKey) *ProofOfLockChange {
 	}
 }
 
-// EmptyPOLC returns an empty polc. This is used when no polc has been provided in the allocated trial period time
+// NewEmptyPOLC returns an empty polc. This is used when no polc has been provided in the allocated trial period time
 // and the node now needs to move to upgrading to AmnesiaEvidence and hence uses an empty polc
 func NewEmptyPOLC() *ProofOfLockChange {
 	return &ProofOfLockChange{
@@ -1277,6 +939,8 @@ func (e *ProofOfLockChange) ToProto() (*tmproto.ProofOfLockChange, error) {
 	return plc, nil
 }
 
+// -------------------------------------------------------------------
+
 // AmnesiaEvidence is the progression of PotentialAmnesiaEvidence and is used to prove an infringement of the
 // Tendermint consensus when a validator incorrectly sends a vote in a later round without correctly changing the lock
 type AmnesiaEvidence struct {
@@ -1430,26 +1094,6 @@ func ProofOfLockChangeFromProto(pb *tmproto.ProofOfLockChange) (*ProofOfLockChan
 	return plc, plc.ValidateBasic()
 }
 
-func PotentialAmnesiaEvidenceFromProto(pb *tmproto.PotentialAmnesiaEvidence) (*PotentialAmnesiaEvidence, error) {
-	voteA, err := VoteFromProto(pb.GetVoteA())
-	if err != nil {
-		return nil, err
-	}
-
-	voteB, err := VoteFromProto(pb.GetVoteB())
-	if err != nil {
-		return nil, err
-	}
-	tp := PotentialAmnesiaEvidence{
-		VoteA:       voteA,
-		VoteB:       voteB,
-		HeightStamp: pb.GetHeightStamp(),
-		Timestamp:   pb.Timestamp,
-	}
-
-	return &tp, tp.ValidateBasic()
-}
-
 func AmnesiaEvidenceFromProto(pb *tmproto.AmnesiaEvidence) (*AmnesiaEvidence, error) {
 	if pb == nil {
 		return nil, errors.New("nil amnesia evidence")
@@ -1473,6 +1117,260 @@ func AmnesiaEvidenceFromProto(pb *tmproto.AmnesiaEvidence) (*AmnesiaEvidence, er
 }
 
 //--------------------------------------------------
+
+// ConflictingHeadersTrace is used by the light client when it
+// observes conflicting headers from its providers. This data structure
+// is designed to be deconstructured into the corresponding evidence 
+// that caused these conflicting headers. 
+type ConflictingHeadersTrace struct {
+	Headers []*SignedHeader `json:"headers"`
+}
+
+// NewConflictingHeadersTrace creates a new instance of the respective evidence
+func NewConflictingHeadersTrace(headers []*SignedHeader) *ConflictingHeadersTrace {
+	return &ConflictingHeadersTrace{Headers: headers}
+}
+
+func (cht *ConflictingHeadersTrace) ValidateBasic() error {
+	if cht == nil {
+		return errors.New("signed header is empty")
+	}
+	if len(cht.Headers) > MaxTraceSize {
+		return fmt.Errorf("limit exceeded on signed header trace size. %d > %d", len(cht.Headers), MaxTraceSize)
+	}
+	lastHeader := &SignedHeader{Header: &Header{Height: 0}}
+	for _, sh := range cht.Headers {
+		if sh == nil {
+			return errors.New("empty signed header in trace")
+		}
+		if lastHeader.Height >= sh.Height {
+			return errors.New("signed headers height not in ascending order")
+		}
+		if err := sh.ValidateBasic(sh.ChainID); err != nil {
+			return fmt.Errorf("signed header validate basic failed: %w", err)
+		}
+		lastHeader = sh
+	}
+	
+	return nil
+}
+
+type getBlockID func(int64) *BlockID
+
+// Trawl loops backwards through the signed header trace to find the point of bifurcation against the nodes own headers.
+func (cht *ConflictingHeadersTrace) Trawl(getBlockID getBlockID) (common *SignedHeader, unknown *SignedHeader) {
+	// we check to see that the first header in the set matches else we can conclude that 
+	// we have nothing in common with this trace and can drop it
+	firstHeader := cht.Headers[0]
+	if !bytes.Equal(getBlockID(firstHeader.Height).Hash, firstHeader.Hash()) {
+		return nil, nil
+	}
+	
+	// We loop backwards because faulty validators will most likely try to minimize the amount of malicious headers
+	// they make because this increases their exposure to being caught. 
+	for i := len(cht.Headers) - 1; i > 1; i-- {
+		h := cht.Headers[i]
+		if bytes.Equal(getBlockID(h.Height).Hash, h.Hash()) {
+			// node has the same first and last header, node assumes trace is non-divergent
+			if i == len(cht.Headers) - 1 {
+				return nil, nil
+			}
+			// we return this common header and the header thereafter that is unknown to the node
+			return h, cht.Headers[i + 1]
+		}
+	}
+	
+	return firstHeader, cht.Headers[1]
+}
+
+func (cht *ConflictingHeadersTrace) String() string {
+	return fmt.Sprintf("ConflictingHeadersTrace{from: %d#%X, to: %d#%X}",
+		cht.Headers[0].Height, cht.Headers[0].Hash(),
+		cht.Headers[len(cht.Headers) - 1].Height, cht.Headers[len(cht.Headers) - 1].Hash())
+}
+
+func (cht *ConflictingHeadersTrace) Bytes() []byte {
+	pbe := cht.ToProto()
+
+	bz, err := pbe.Marshal()
+	if err != nil {
+		panic(err)
+	}
+
+	return bz
+}
+
+func (cht *ConflictingHeadersTrace) Hash() []byte {
+    return tmhash.Sum(cht.Bytes())
+}
+
+func (cht *ConflictingHeadersTrace) ToProto() *tmproto.ConflictingHeadersTrace {
+	hpb := make([]*tmproto.SignedHeader, len(cht.Headers))
+
+	for i, h := range cht.Headers {	
+		hpb[i] = h.ToProto()
+	}
+
+	return &tmproto.ConflictingHeadersTrace{
+		Headers: hpb,
+	}
+}
+
+func ConflictingHeadersTraceFromProto(pb *tmproto.ConflictingHeadersTrace) (*ConflictingHeadersTrace, error) {
+	if pb == nil {
+		return &ConflictingHeadersTrace{}, errors.New("nil ConflictingHeadersTrace")
+	}
+	headers := make([]*SignedHeader, len(pb.Headers))
+	
+	for i, pbh := range pb.Headers {
+		h, err := SignedHeaderFromProto(pbh)
+		if err != nil {
+			return &ConflictingHeadersTrace{}, fmt.Errorf("from proto err: %w", err) 
+		}
+		headers[i] = h
+	}
+
+	trace := &ConflictingHeadersTrace{
+		Headers: headers,
+	}
+
+	return trace, trace.ValidateBasic()
+}
+
+// ExamineHeaderDivergence analyzes a divergence in headers for malicious behavior and extracts out the evidence.
+// trustedHeader and divergedHeader must have different hashes but be of the same height
+// commonHeader must be the header that bisects to divergedHeader
+func ExamineHeaderDivergence(
+	commonHeader, trustedHeader, divergedHeader *SignedHeader, 
+	commonValSet *ValidatorSet) []Evidence {
+	
+	evList := CheckForLunaticAttack(commonHeader, trustedHeader, divergedHeader, commonValSet)
+	if len(evList) > 0 {
+		return evList
+	}
+	
+	return CheckForEquivocation(trustedHeader, divergedHeader)
+}
+	
+// CheckForEquivocation takes two headers of the same height and chainID but different and
+// looks for any form of equivocation (double voting or amnesia) that may have caused
+// the conflicting headers
+func CheckForEquivocation(trustedHeader, divergedHeader *SignedHeader) []Evidence {
+	evList := make([]Evidence, 0)
+
+	// Use the fact that signatures are sorted by ValidatorAddress.
+	var (
+		i = 0
+		j = 0
+	)
+	
+	OUTER_LOOP:
+	for i < len(trustedHeader.Commit.Signatures) {
+		sigA := trustedHeader.Commit.Signatures[i]
+		if sigA.Absent() {
+			i++
+			continue
+		}
+
+		for j < len(divergedHeader.Commit.Signatures) {
+			sigB := divergedHeader.Commit.Signatures[j]
+			if sigB.Absent() {
+				j++
+				continue
+			}
+
+			switch bytes.Compare(sigA.ValidatorAddress, sigB.ValidatorAddress) {
+			case 0:
+				// if H1.Round == H2.Round, and some signers signed different precommit
+				// messages in both commits, then it is an equivocation misbehavior =>
+				// immediately slashable (#F1).
+				if trustedHeader.Commit.Round == divergedHeader.Commit.Round {
+					evList = append(evList, NewDuplicateVoteEvidence(
+						trustedHeader.Commit.GetVote(int32(i)),
+						divergedHeader.Commit.GetVote(int32(j)),
+						trustedHeader.Time,
+					))
+				} else {
+					// if H1.Round != H2.Round there could be possible amnesia evidence => not
+					// immediately slashable.
+					firstVote := trustedHeader.Commit.GetVote(int32(i))
+					secondVote := divergedHeader.Commit.GetVote(int32(j))
+					newEv := NewPotentialAmnesiaEvidence(firstVote, secondVote, trustedHeader.Time)
+
+					// has the validator incorrectly voted for a previous round
+					if newEv.VoteA.Round > newEv.VoteB.Round {
+						evList = append(evList, NewAmnesiaEvidence(newEv, NewEmptyPOLC()))
+					} else {
+						evList = append(evList, newEv)
+					}
+				}
+
+				i++
+				j++
+				continue OUTER_LOOP
+			case 1:
+				i++
+				continue OUTER_LOOP
+			case -1:
+				j++
+			}
+		}
+	}
+
+	return evList
+}
+
+// CheckForLunaticAttack examines if a divergedHeader stems from an incorrect state transition and therefore
+// forged by a faulty cabal to fool a light client => lunatic misbehavior => immediately slashable (#F5).
+func CheckForLunaticAttack(commonHeader, trustedHeader, divergedHeader *SignedHeader, 
+	commonValSet *ValidatorSet) []Evidence {
+	evList := make([]Evidence, 0)
+	// Light clients can have different trust levels but we use the minimum which is 1/3. 
+	trustLevel := tmmath.Fraction{1, 3}
+
+	// Should be able to bisect from the commonHeader to the divergedHeader
+	err := commonValSet.VerifyCommitLightTrusting(commonHeader.ChainID, divergedHeader.Commit, trustLevel)
+	if err != nil {
+		return evList
+	}
+	
+	// Check if ValidatorsHash, NextValidatorsHash, ConsensusHash, AppHash, and
+	// LastResultsHash in divergedHeader are different
+	var invalidField string
+	switch {
+	case !bytes.Equal(trustedHeader.ValidatorsHash, divergedHeader.ValidatorsHash):
+		invalidField = "ValidatorsHash"
+	case !bytes.Equal(trustedHeader.NextValidatorsHash, divergedHeader.NextValidatorsHash):
+		invalidField = "NextValidatorsHash"
+	case !bytes.Equal(trustedHeader.ConsensusHash, divergedHeader.ConsensusHash):
+		invalidField = "ConsensusHash"
+	case !bytes.Equal(trustedHeader.AppHash, divergedHeader.AppHash):
+		invalidField = "AppHash"
+	case !bytes.Equal(trustedHeader.LastResultsHash, divergedHeader.LastResultsHash):
+		invalidField = "LastResultsHash"
+	}
+	if invalidField != "" {
+		for i, sig := range divergedHeader.Commit.Signatures {
+			if sig.Absent() {
+				continue
+			}
+			// we only create evidence against the validators that were in the common validator set
+			if commonValSet.HasAddress(sig.ValidatorAddress) {
+				evList = append(evList, NewLunaticValidatorEvidence(
+					divergedHeader.Header,
+					divergedHeader.Commit.GetVote(int32(i)),
+					invalidField,
+					commonHeader.Height, // height that we know the validator was in the set for
+					trustedHeader.Time, //take the time of our own trusted header
+				))
+			}
+		}
+	}
+	
+	return evList
+}
+
+// -------------------------------------------------------------------
 
 // EvidenceList is a list of Evidence. Evidences is not a word.
 type EvidenceList []Evidence
@@ -1505,6 +1403,79 @@ func (evl EvidenceList) Has(evidence Evidence) bool {
 		}
 	}
 	return false
+}
+
+//-------------------------------------------- PROTOBUF -------------------------------------
+
+func EvidenceToProto(evidence Evidence) (*tmproto.Evidence, error) {
+	if evidence == nil {
+		return nil, errors.New("nil evidence")
+	}
+
+	switch evi := evidence.(type) {
+	case *DuplicateVoteEvidence:
+		pbevi := evi.ToProto()
+		tp := &tmproto.Evidence{
+			Sum: &tmproto.Evidence_DuplicateVoteEvidence{
+				DuplicateVoteEvidence: pbevi,
+			},
+		}
+		return tp, nil
+		
+	case *LunaticValidatorEvidence:
+		pbevi := evi.ToProto()
+
+		tp := &tmproto.Evidence{
+			Sum: &tmproto.Evidence_LunaticValidatorEvidence{
+				LunaticValidatorEvidence: pbevi,
+			},
+		}
+
+		return tp, nil
+
+	case *PotentialAmnesiaEvidence:
+		pbevi := evi.ToProto()
+
+		tp := &tmproto.Evidence{
+			Sum: &tmproto.Evidence_PotentialAmnesiaEvidence{
+				PotentialAmnesiaEvidence: pbevi,
+			},
+		}
+
+		return tp, nil
+
+	case *AmnesiaEvidence:
+		aepb := evi.ToProto()
+
+		tp := &tmproto.Evidence{
+			Sum: &tmproto.Evidence_AmnesiaEvidence{
+				AmnesiaEvidence: aepb,
+			},
+		}
+
+		return tp, nil
+	default:
+		return nil, fmt.Errorf("toproto: evidence is not recognized: %T", evi)
+	}
+}
+
+func EvidenceFromProto(evidence *tmproto.Evidence) (Evidence, error) {
+	if evidence == nil {
+		return nil, errors.New("nil evidence")
+	}
+
+	switch evi := evidence.Sum.(type) {
+	case *tmproto.Evidence_DuplicateVoteEvidence:
+		return DuplicateVoteEvidenceFromProto(evi.DuplicateVoteEvidence)
+	case *tmproto.Evidence_LunaticValidatorEvidence:
+		return LunaticValidatorEvidenceFromProto(evi.LunaticValidatorEvidence)
+	case *tmproto.Evidence_PotentialAmnesiaEvidence:
+		return PotentialAmnesiaEvidenceFromProto(evi.PotentialAmnesiaEvidence)
+	case *tmproto.Evidence_AmnesiaEvidence:
+		return AmnesiaEvidenceFromProto(evi.AmnesiaEvidence)
+	default:
+		return nil, errors.New("evidence is not recognized")
+	}
 }
 
 //-------------------------------------------- MOCKING --------------------------------------

@@ -152,26 +152,26 @@ func (evpool *Pool) AddEvidence(evidence types.Evidence) error {
 
 	evpool.logger.Debug("Attempting to add evidence", "ev", evidence)
 
-	valSet, err := sm.LoadValidators(evpool.stateDB, evidence.Height())
-	if err != nil {
-		return fmt.Errorf("can't load validators at height #%d: %w", evidence.Height(), err)
-	}
+	// valSet, err := sm.LoadValidators(evpool.stateDB, evidence.Height())
+	// if err != nil {
+	// 	return fmt.Errorf("can't load validators at height #%d: %w", evidence.Height(), err)
+	// }
 
 	// Break composite evidence into smaller pieces.
-	if ce, ok := evidence.(types.CompositeEvidence); ok {
-		evpool.logger.Info("Breaking up composite evidence", "ev", evidence)
+	// if ce, ok := evidence.(types.CompositeEvidence); ok {
+	// 	evpool.logger.Info("Breaking up composite evidence", "ev", evidence)
 
-		blockMeta := evpool.blockStore.LoadBlockMeta(evidence.Height())
-		if blockMeta == nil {
-			return fmt.Errorf("don't have block meta at height #%d", evidence.Height())
-		}
+	// 	blockMeta := evpool.blockStore.LoadBlockMeta(evidence.Height())
+	// 	if blockMeta == nil {
+	// 		return fmt.Errorf("don't have block meta at height #%d", evidence.Height())
+	// 	}
 
-		if err := ce.VerifyComposite(&blockMeta.Header, valSet); err != nil {
-			return err
-		}
+	// 	if err := ce.VerifyComposite(&blockMeta.Header, valSet); err != nil {
+	// 		return err
+	// 	}
 
-		evList = ce.Split(&blockMeta.Header, valSet)
-	}
+	// 	evList = ce.Split(&blockMeta.Header, valSet)
+	// }
 
 	for _, ev := range evList {
 

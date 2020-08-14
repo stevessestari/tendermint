@@ -643,7 +643,7 @@ func TestVerifyEvidenceWithLunaticValidatorEvidence(t *testing.T) {
 	err := vals[val.Address.String()].SignVote(chainID, v)
 	vote.Signature = v.Signature
 	require.NoError(t, err)
-	ev := types.NewLunaticValidatorEvidence(h, vote, "ConsensusHash", defaultTestTime)
+	ev := types.NewLunaticValidatorEvidence(h, vote, "ConsensusHash", h.Height - 1, defaultTestTime)
 	err = ev.ValidateBasic()
 	require.NoError(t, err)
 	err = sm.VerifyEvidence(stateDB, state, ev, h)

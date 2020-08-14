@@ -123,8 +123,8 @@ func (p *http) ValidatorSet(height int64) (*types.ValidatorSet, error) {
 }
 
 // ReportEvidence calls `/broadcast_evidence` endpoint.
-func (p *http) ReportEvidence(ev types.Evidence) error {
-	_, err := p.client.BroadcastEvidence(ev)
+func (p *http) ReportEvidence(trace *types.ConflictingHeadersTrace) error {
+	_, err := p.client.BroadcastHeaderTrace(trace)
 	return err
 }
 

@@ -265,7 +265,7 @@ func exampleHeader() *types.Header {
 func TestEvidenceVectors(t *testing.T) {
 
 	dupl := types.NewDuplicateVoteEvidence(exampleVote(1), exampleVote(2), time.Date(2019, 10, 13, 16, 14, 44, 0, time.UTC))
-	lve := types.NewLunaticValidatorEvidence(exampleHeader(), exampleVote(1), "Datahash", time.Date(2019, 10, 13, 16, 14, 44, 0, time.UTC))
+	lve := types.NewLunaticValidatorEvidence(exampleHeader(), exampleVote(1), "Datahash", 1, time.Date(2019, 10, 13, 16, 14, 44, 0, time.UTC))
 
 	testCases := []struct {
 		testName     string

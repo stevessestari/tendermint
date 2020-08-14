@@ -29,6 +29,6 @@ func (p *deadMock) SignedHeader(height int64) (*types.SignedHeader, error) {
 func (p *deadMock) ValidatorSet(height int64) (*types.ValidatorSet, error) {
 	return nil, errNoResp
 }
-func (p *deadMock) ReportEvidence(ev types.Evidence) error {
+func (p *deadMock) ReportEvidence(ev *types.ConflictingHeadersTrace) error {
 	return errNoResp
 }
