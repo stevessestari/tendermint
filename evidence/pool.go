@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ type Pool struct {
 	evidenceList  *clist.CList // concurrent linked-list of evidence
 
 	// needed to load validators to verify evidence
-	stateDB dbm.DB
+	stateDB StateStore
 	// needed to load headers to verify evidence
 	blockStore BlockStore
 
@@ -45,11 +46,11 @@ type Pool struct {
 	nextEvidenceTrialEndedHeight int64
 }
 
-// Creates a new pool. If using an existing evidence store, it will add all pending evidence
-// to the concurrent list.
-func NewPool(stateDB, evidenceDB dbm.DB, blockStore BlockStore) (*Pool, error) {
+// NewPool creates an evidence pool. If using an existing evidence store,
+// it will add all pending evidence to the concurrent list.
+func NewPool(evidenceDB dbm.DB, stateDB StateStore, blockStore BlockStore) (*Pool, error) {
 	var (
-		state = sm.LoadState(stateDB)
+		state = stateDB.LoadState()
 	)
 
 	pool := &Pool{
@@ -285,6 +286,37 @@ func (evpool *Pool) EvaluateTrace(trace *types.ConflictingHeadersTrace) error {
 	}
 
 	return nil
+}
+
+// Verify verifies the evidence against the node's (or evidence pool's) state. More specifically, to validate
+// evidence against state is to validate it against the nodes own header and validator set for that height. This ensures
+// as well as meeting the evidence's own validation rules, that the evidence hasn't expired, that the validator is still
+// bonded and that the evidence can be committed to the chain.
+func (evpool *Pool) Verify(evidence types.Evidence) error {
+	if evpool.IsCommitted(evidence) {
+		return errors.New("evidence was already committed")
+	}
+	// We have already verified this piece of evidence - no need to do it again
+	if evpool.IsPending(evidence) {
+		return nil
+	}
+
+	// if we don't already have amnesia evidence we need to add it to start our own trial period unless
+	// a) a valid polc has already been attached
+	// b) the accused node voted back on an earlier round
+	if ae, ok := evidence.(*types.AmnesiaEvidence); ok && ae.Polc.IsAbsent() && ae.PotentialAmnesiaEvidence.VoteA.Round <
+		ae.PotentialAmnesiaEvidence.VoteB.Round {
+		if err := evpool.AddEvidence(ae.PotentialAmnesiaEvidence); err != nil {
+			return fmt.Errorf("unknown amnesia evidence, trying to add to evidence pool, err: %w", err)
+		}
+		return errors.New("amnesia evidence is new and hasn't undergone trial period yet")
+	}
+
+	return evpool.verify(evidence)
+}
+
+func (evpool *Pool) verify(evidence types.Evidence) error {
+	return VerifyEvidence(evidence, evpool.State(), evpool.stateDB, evpool.blockStore)
 }
 
 // MarkEvidenceAsCommitted marks all the evidence as committed and removes it
@@ -574,7 +606,7 @@ func (evpool *Pool) pruneExpiredPOLC() {
 			evpool.logger.Error("Unable to transition POLC from protobuf", "err", err)
 			continue
 		}
-		if !evpool.IsExpired(proof.Height()-1, proof.Time()) {
+		if !evpool.IsExpired(proof.Height(), proof.Time()) {
 			return
 		}
 		err = evpool.evidenceStore.Delete(iter.Key())

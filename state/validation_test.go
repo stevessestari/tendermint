@@ -8,11 +8,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tendermint/tendermint/crypto"
-	"github.com/tendermint/tendermint/libs/bytes"
-	tmrand "github.com/tendermint/tendermint/libs/rand"
-	"github.com/tendermint/tendermint/proto/tendermint/version"
-
 	"github.com/tendermint/tendermint/crypto/ed25519"
 	"github.com/tendermint/tendermint/crypto/tmhash"
 	"github.com/tendermint/tendermint/libs/log"
@@ -220,14 +215,7 @@ func TestValidateBlockEvidence(t *testing.T) {
 	defaultEvidenceTime := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	evpool := &mocks.EvidencePool{}
-	evpool.On("IsPending", mock.AnythingOfType("*types.DuplicateVoteEvidence")).Return(false)
-	evpool.On("IsCommitted", mock.AnythingOfType("*types.DuplicateVoteEvidence")).Return(false)
-	evpool.On("Header", mock.AnythingOfType("int64")).Return(func(height int64) *types.Header {
-		return &types.Header{
-			Time:   defaultEvidenceTime,
-			Height: height,
-		}
-	})
+	evpool.On("Verify", mock.AnythingOfType("*types.DuplicateVoteEvidence")).Return(nil)
 	evpool.On("Update", mock.AnythingOfType("*types.Block"), mock.AnythingOfType("state.State")).Return()
 
 	state.ConsensusParams.Evidence.MaxNum = 3
@@ -287,73 +275,6 @@ func TestValidateBlockEvidence(t *testing.T) {
 		)
 		require.NoError(t, err, "height %d", height)
 	}
-}
-
-func TestValidateFailBlockOnCommittedEvidence(t *testing.T) {
-	var height int64 = 1
-	state, stateDB, privVals := makeState(2, int(height))
-	_, val := state.Validators.GetByIndex(0)
-	_, val2 := state.Validators.GetByIndex(1)
-	ev := types.NewMockDuplicateVoteEvidenceWithValidator(height, defaultTestTime,
-		privVals[val.Address.String()], chainID)
-	ev2 := types.NewMockDuplicateVoteEvidenceWithValidator(height, defaultTestTime,
-		privVals[val2.Address.String()], chainID)
-
-	header := &types.Header{Time: defaultTestTime}
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("IsPending", ev).Return(false)
-	evpool.On("IsPending", ev2).Return(false)
-	evpool.On("IsCommitted", ev).Return(false)
-	evpool.On("IsCommitted", ev2).Return(true)
-	evpool.On("Header", height).Return(header)
-
-	blockExec := sm.NewBlockExecutor(
-		stateDB, log.TestingLogger(),
-		nil,
-		nil,
-		evpool)
-	// A block with a couple pieces of evidence passes.
-	block := makeBlock(state, height)
-	block.Evidence.Evidence = []types.Evidence{ev, ev2}
-	block.EvidenceHash = block.Evidence.Hash()
-	err := blockExec.ValidateBlock(state, block)
-
-	assert.Error(t, err)
-	assert.IsType(t, err, &types.ErrEvidenceInvalid{})
-}
-
-func TestValidateAlreadyPendingEvidence(t *testing.T) {
-	var height int64 = 1
-	state, stateDB, privVals := makeState(2, int(height))
-	_, val := state.Validators.GetByIndex(0)
-	_, val2 := state.Validators.GetByIndex(1)
-	ev := types.NewMockDuplicateVoteEvidenceWithValidator(height, defaultTestTime,
-		privVals[val.Address.String()], chainID)
-	ev2 := types.NewMockDuplicateVoteEvidenceWithValidator(height, defaultTestTime,
-		privVals[val2.Address.String()], chainID)
-	header := &types.Header{Time: defaultTestTime}
-
-	evpool := &mocks.EvidencePool{}
-	evpool.On("IsPending", ev).Return(false)
-	evpool.On("IsPending", ev2).Return(true)
-	evpool.On("IsCommitted", ev).Return(false)
-	evpool.On("IsCommitted", ev2).Return(false)
-	evpool.On("Header", height).Return(header)
-
-	blockExec := sm.NewBlockExecutor(
-		stateDB, log.TestingLogger(),
-		nil,
-		nil,
-		evpool)
-	// A block with a couple pieces of evidence passes.
-	block := makeBlock(state, height)
-	// add one evidence seen before and one evidence that hasn't
-	block.Evidence.Evidence = []types.Evidence{ev, ev2}
-	block.EvidenceHash = block.Evidence.Hash()
-	err := blockExec.ValidateBlock(state, block)
-
-	assert.NoError(t, err)
 }
 
 func TestValidateDuplicateEvidenceShouldFail(t *testing.T) {
