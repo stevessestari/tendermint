@@ -1,7 +1,7 @@
 package evidence
 
 import (
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
@@ -10,7 +10,6 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/p2p"
 	ep "github.com/tendermint/tendermint/proto/tendermint/evidence"
-	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -65,27 +64,43 @@ func (evR *Reactor) AddPeer(peer p2p.Peer) {
 // Receive implements Reactor.
 // It adds any received evidence to the evpool.
 func (evR *Reactor) Receive(chID byte, src p2p.Peer, msgBytes []byte) {
-	evis, err := decodeMsg(msgBytes)
+	msg, err := decodeMsg(msgBytes)
 	if err != nil {
 		evR.Logger.Error("Error decoding message", "src", src, "chId", chID, "err", err, "bytes", msgBytes)
 		evR.Switch.StopPeerForError(src, err)
 		return
 	}
 
-	for _, ev := range evis {
+	err = msg.ValidateBasic()
+	if err != nil {
+		evR.Logger.Error("Message failed validate basic", "src", src, "chId", chID, "err", err, "bytes", msgBytes)
+		evR.Switch.StopPeerForError(src, err)
+		return
+	}
+
+	switch msg.(type) {
+	case types.Evidence:
+		ev := msg.(types.Evidence)
 		err := evR.evpool.AddEvidence(ev)
 		switch err.(type) {
 		case *types.ErrEvidenceInvalid:
 			evR.Logger.Error(err.Error())
 			// punish peer
 			evR.Switch.StopPeerForError(src, err)
-			return
 		case nil:
 		default:
-			// continue to the next piece of evidence
-			evR.Logger.Error("Evidence has not been added", "evidence", evis, "err", err)
+			evR.Logger.Error("Evidence has not been added", "evidence", ev, "err", err)
+		}
+		return
+	case *types.ConflictingHeadersTrace:
+		trace := msg.(*types.ConflictingHeadersTrace)
+		err := evR.evpool.EvaluateTrace(trace)
+		if err != nil {
+			evR.Logger.Error("Invalid conflicting headers trace", "trace", trace, "err", err)
+			evR.Switch.StopPeerForError(src, err)
 		}
 	}
+
 }
 
 // SetEventBus implements events.Eventable.
@@ -118,10 +133,9 @@ func (evR *Reactor) broadcastEvidenceRoutine(peer p2p.Peer) {
 			}
 		}
 
-		ev := next.Value.(types.Evidence)
-		evis, retry := evR.checkSendEvidenceMessage(peer, ev)
-		if len(evis) > 0 {
-			msgBytes, err := encodeMsg(evis)
+		ev, retry := evR.checkSendEvidenceMessage(peer, next.Value.(types.Evidence))
+		if ev != nil {
+			msgBytes, err := encodeMsg(ev)
 			if err != nil {
 				panic(err)
 			}
@@ -157,7 +171,7 @@ func (evR *Reactor) broadcastEvidenceRoutine(peer p2p.Peer) {
 func (evR Reactor) checkSendEvidenceMessage(
 	peer p2p.Peer,
 	ev types.Evidence,
-) (evis []types.Evidence, retry bool) {
+) (types.Evidence, bool) {
 
 	// make sure the peer is up to date
 	evHeight := ev.Height()
@@ -205,7 +219,7 @@ func (evR Reactor) checkSendEvidenceMessage(
 	}
 
 	// send evidence
-	return []types.Evidence{ev}, false
+	return ev, false
 }
 
 // PeerState describes the state of a peer.
@@ -215,43 +229,55 @@ type PeerState interface {
 
 // encodemsg takes a array of evidence
 // returns the byte encoding of the List Message
-func encodeMsg(evis []types.Evidence) ([]byte, error) {
-	evi := make([]*tmproto.Evidence, len(evis))
-	for i := 0; i < len(evis); i++ {
-		ev, err := types.EvidenceToProto(evis[i])
-		if err != nil {
-			return nil, err
-		}
-		evi[i] = ev
+func encodeMsg(ev types.Evidence) ([]byte, error) {
+	pbev, err := types.EvidenceToProto(ev)
+	if err != nil {
+		return nil, err
 	}
-
-	epl := ep.List{
-		Evidence: evi,
+	evMessage := &ep.Message{
+		Sum: &ep.Message_Evidence{
+			Evidence: pbev,
+		},
 	}
+	return proto.Marshal(evMessage)
+}
 
-	return proto.Marshal(&epl)
+type evidenceMessage interface {
+	ValidateBasic() error
 }
 
 // decodemsg takes an array of bytes
 // returns an array of evidence
-func decodeMsg(bz []byte) (evis []types.Evidence, err error) {
-	lm := ep.List{}
-	proto.Unmarshal(bz, &lm)
+func decodeMsg(bz []byte) (msg evidenceMessage, err error) {
+	pb := &ep.Message{}
+	if err = proto.Unmarshal(bz, pb); err != nil {
+		return msg, err
+	}
 
-	evis = make([]types.Evidence, len(lm.Evidence))
-	for i := 0; i < len(lm.Evidence); i++ {
-		ev, err := types.EvidenceFromProto(lm.Evidence[i])
+	return evidenceMessageFromProto(pb)
+}
+
+func evidenceMessageFromProto(pbmsg *ep.Message) (evidenceMessage, error) {
+	if pbmsg == nil {
+		return nil, errors.New("nil evidence message")
+	}
+	var (
+		msg evidenceMessage
+		err error
+	)
+
+	switch pbmsg.Sum.(type) {
+	case *ep.Message_ConflictingHeadersTrace:
+		msg, err = types.ConflictingHeadersTraceFromProto(pbmsg.GetConflictingHeadersTrace())
 		if err != nil {
-			return nil, err
+			return msg, err
 		}
-		evis[i] = ev
-	}
-
-	for i, ev := range evis {
-		if err := ev.ValidateBasic(); err != nil {
-			return nil, fmt.Errorf("invalid evidence (#%d): %v", i, err)
+	case *ep.Message_Evidence:
+		msg, err = types.EvidenceFromProto(pbmsg.GetEvidence())
+		if err != nil {
+			return msg, err
 		}
 	}
 
-	return evis, nil
+	return msg, err
 }

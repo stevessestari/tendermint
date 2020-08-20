@@ -54,38 +54,6 @@ const (
 	LastResultsHashField    = "LastResultsHash"
 )
 
-// ErrEvidenceInvalid wraps a piece of evidence and the error denoting how or why it is invalid.
-type ErrEvidenceInvalid struct {
-	Evidence   Evidence
-	ErrorValue error
-}
-
-// NewErrEvidenceInvalid returns a new EvidenceInvalid with the given err.
-func NewErrEvidenceInvalid(ev Evidence, err error) *ErrEvidenceInvalid {
-	return &ErrEvidenceInvalid{ev, err}
-}
-
-// Error returns a string representation of the error.
-func (err *ErrEvidenceInvalid) Error() string {
-	return fmt.Sprintf("Invalid evidence: %v. Evidence: %v", err.ErrorValue, err.Evidence)
-}
-
-// ErrEvidenceOverflow is for when there is too much evidence in a block.
-type ErrEvidenceOverflow struct {
-	MaxNum int
-	GotNum int
-}
-
-// NewErrEvidenceOverflow returns a new ErrEvidenceOverflow where got > max.
-func NewErrEvidenceOverflow(max, got int) *ErrEvidenceOverflow {
-	return &ErrEvidenceOverflow{max, got}
-}
-
-// Error returns a string representation of the error.
-func (err *ErrEvidenceOverflow) Error() string {
-	return fmt.Sprintf("Too much evidence: Max %d, got %d", err.MaxNum, err.GotNum)
-}
-
 func init() {
 	tmjson.RegisterType(&DuplicateVoteEvidence{}, "tendermint/DuplicateVoteEvidence")
 	tmjson.RegisterType(&ConflictingHeadersTrace{}, "tendermint/ConflictingHeadersTrace")
@@ -1132,9 +1100,14 @@ func NewConflictingHeadersTrace(headers []*SignedHeader) *ConflictingHeadersTrac
 }
 
 func (cht *ConflictingHeadersTrace) ValidateBasic() error {
-	if cht == nil {
-		return errors.New("signed header is empty")
+	if cht == nil || cht.Headers == nil {
+		return errors.New("conflicting header trace is empty")
 	}
+	
+	if len(cht.Headers) < 2 {
+		return fmt.Errorf("at least two headers is required to form a trace")
+	}
+
 	if len(cht.Headers) > MaxTraceSize {
 		return fmt.Errorf("limit exceeded on signed header trace size. %d > %d", len(cht.Headers), MaxTraceSize)
 	}
@@ -1158,29 +1131,33 @@ func (cht *ConflictingHeadersTrace) ValidateBasic() error {
 type getBlockID func(int64) *BlockID
 
 // Trawl loops backwards through the signed header trace to find the point of bifurcation against the nodes own headers.
-func (cht *ConflictingHeadersTrace) Trawl(getBlockID getBlockID) (common *SignedHeader, unknown *SignedHeader) {
+func (cht *ConflictingHeadersTrace) Trawl(getBlockID getBlockID) (common *SignedHeader, diverged *SignedHeader, err error) {
 	// we check to see that the first header in the set matches else we can conclude that 
 	// we have nothing in common with this trace and can drop it
 	firstHeader := cht.Headers[0]
 	if !bytes.Equal(getBlockID(firstHeader.Height).Hash, firstHeader.Hash()) {
-		return nil, nil
+		return nil, nil, NewErrInvalidTrace("the first header in the trace does not match")
 	}
 	
 	// We loop backwards because faulty validators will most likely try to minimize the amount of malicious headers
 	// they make because this increases their exposure to being caught. 
-	for i := len(cht.Headers) - 1; i > 1; i-- {
+	for i := len(cht.Headers) - 1; i > 0; i-- {
 		h := cht.Headers[i]
-		if bytes.Equal(getBlockID(h.Height).Hash, h.Hash()) {
+		blockID := getBlockID(h.Height)
+		if blockID == nil {
+			return nil, nil, fmt.Errorf("blockID at height %d can't be found", h.Height)
+		}
+		if bytes.Equal(blockID.Hash, h.Hash()) {
 			// node has the same first and last header, node assumes trace is non-divergent
 			if i == len(cht.Headers) - 1 {
-				return nil, nil
+				return nil, nil, NewErrInvalidTrace("the last header in the trace should not match")
 			}
 			// we return this common header and the header thereafter that is unknown to the node
-			return h, cht.Headers[i + 1]
+			return h, cht.Headers[i + 1], nil
 		}
 	}
 	
-	return firstHeader, cht.Headers[1]
+	return firstHeader, cht.Headers[1], nil
 }
 
 func (cht *ConflictingHeadersTrace) String() string {
@@ -1217,7 +1194,7 @@ func (cht *ConflictingHeadersTrace) ToProto() *tmproto.ConflictingHeadersTrace {
 }
 
 func ConflictingHeadersTraceFromProto(pb *tmproto.ConflictingHeadersTrace) (*ConflictingHeadersTrace, error) {
-	if pb == nil {
+	if pb == nil || pb.Headers == nil || len(pb.Headers) == 0 {
 		return &ConflictingHeadersTrace{}, errors.New("nil ConflictingHeadersTrace")
 	}
 	headers := make([]*SignedHeader, len(pb.Headers))
@@ -1322,6 +1299,7 @@ func CheckForEquivocation(trustedHeader, divergedHeader *SignedHeader) []Evidenc
 
 // CheckForLunaticAttack examines if a divergedHeader stems from an incorrect state transition and therefore
 // forged by a faulty cabal to fool a light client => lunatic misbehavior => immediately slashable (#F5).
+// CheckForLunaticAttack does not run any checks to validate the inputted arguments. This should be done beforehand.
 func CheckForLunaticAttack(commonHeader, trustedHeader, divergedHeader *SignedHeader, 
 	commonValSet *ValidatorSet) []Evidence {
 	evList := make([]Evidence, 0)
@@ -1361,7 +1339,7 @@ func CheckForLunaticAttack(commonHeader, trustedHeader, divergedHeader *SignedHe
 					divergedHeader.Commit.GetVote(int32(i)),
 					invalidField,
 					commonHeader.Height, // height that we know the validator was in the set for
-					trustedHeader.Time, //take the time of our own trusted header
+					commonHeader.Time, //take the time of our own commonHeader
 				))
 			}
 		}
@@ -1477,6 +1455,57 @@ func EvidenceFromProto(evidence *tmproto.Evidence) (Evidence, error) {
 		return nil, errors.New("evidence is not recognized")
 	}
 }
+
+//-------------------------------------------- ERRORS --------------------------------------
+
+// ErrEvidenceInvalid wraps a piece of evidence and the error denoting how or why it is invalid.
+type ErrEvidenceInvalid struct {
+	Evidence   Evidence
+	ErrorValue error
+}
+
+// NewErrEvidenceInvalid returns a new EvidenceInvalid with the given err.
+func NewErrEvidenceInvalid(ev Evidence, err error) *ErrEvidenceInvalid {
+	return &ErrEvidenceInvalid{ev, err}
+}
+
+// Error returns a string representation of the error.
+func (err *ErrEvidenceInvalid) Error() string {
+	return fmt.Sprintf("Invalid evidence: %v. Evidence: %v", err.ErrorValue, err.Evidence)
+}
+
+// ErrEvidenceOverflow is for when there is too much evidence in a block.
+type ErrEvidenceOverflow struct {
+	MaxNum int
+	GotNum int
+}
+
+// NewErrEvidenceOverflow returns a new ErrEvidenceOverflow where got > max.
+func NewErrEvidenceOverflow(max, got int) *ErrEvidenceOverflow {
+	return &ErrEvidenceOverflow{max, got}
+}
+
+// Error returns a string representation of the error.
+func (err *ErrEvidenceOverflow) Error() string {
+	return fmt.Sprintf("Too much evidence: Max %d, got %d", err.MaxNum, err.GotNum)
+}
+
+// ErrInvalidTrace is returned when there's an error during verification. Peer should be dropped.
+type ErrInvalidTrace struct {
+	Reason string
+}
+
+// NewErrInvalidTrace returns an invalid trace error
+func NewErrInvalidTrace(reason string) *ErrInvalidTrace {
+	return &ErrInvalidTrace{
+		Reason: reason,
+	}
+}
+
+func (err *ErrInvalidTrace) Error() string {
+	return err.Reason
+}
+
 
 //-------------------------------------------- MOCKING --------------------------------------
 

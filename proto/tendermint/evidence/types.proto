@@ -5,13 +5,9 @@ option go_package = "github.com/tendermint/tendermint/proto/tendermint/evidence"
 
 import "tendermint/types/evidence.proto";
 
-message List {
-  repeated tendermint.types.Evidence evidence = 1;
-}
-
 message Message {
   oneof sum {
-    List list  = 1;
+    tendermint.types.Evidence evidence  = 1;
     tendermint.types.ConflictingHeadersTrace conflicting_headers_trace = 2;
   }
 }

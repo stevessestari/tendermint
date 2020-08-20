@@ -80,7 +80,7 @@ func TestEvidencePool(t *testing.T) {
 
 	// if we send it again, it shouldnt add and return an error
 	err = pool.AddEvidence(goodEvidence)
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Equal(t, 1, pool.evidenceList.Len())
 }
 
@@ -118,8 +118,6 @@ func TestProposingAndCommittingEvidence(t *testing.T) {
 	assert.True(t, pool.IsCommitted(evidence))
 	assert.False(t, pool.IsPending(evidence))
 	assert.Equal(t, 0, pool.evidenceList.Len())
-
-	// evidence should
 }
 
 func TestAddEvidence(t *testing.T) {
@@ -389,7 +387,7 @@ func TestAddingPotentialAmnesiaEvidence(t *testing.T) {
 	// not from a validator in this set. However, an error isn't thrown because the evidence pool
 	// should still be able to save the regular potential amnesia evidence.
 	err = pool.AddEvidence(ev)
-	assert.NoError(t, err)
+	assert.NoError(t, err, ev.String())
 
 	// evidence requires trial period until it is available -> we expect no evidence to be returned
 	assert.Equal(t, 0, len(pool.PendingEvidence(1)))
@@ -415,7 +413,7 @@ func TestAddingPotentialAmnesiaEvidence(t *testing.T) {
 	pool.Update(block, state)
 	assert.Equal(t, int64(-1), pool.nextEvidenceTrialEndedHeight)
 
-	assert.Equal(t, 1, len(pool.PendingEvidence(1)))
+	assert.Equal(t, types.NewAmnesiaEvidence(ev, types.NewEmptyPOLC()), pool.PendingEvidence(1)[0])
 
 	// CASE D
 	pool.logger.Info("CASE D")
@@ -443,7 +441,7 @@ func TestAddingPotentialAmnesiaEvidence(t *testing.T) {
 	// we should extract out the potential amnesia evidence and trying to add that before realising
 	// that we already have it -> no error
 	err = pool.AddEvidence(ae)
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Equal(t, 2, len(pool.AllPendingEvidence()))
 
 	voteD := makeVote(height, 2, 0, pubKey.Address(), firstBlockID, evidenceTime.Add(4*time.Second))
@@ -484,6 +482,159 @@ func TestAddingPotentialAmnesiaEvidence(t *testing.T) {
 	assert.True(t, pool.IsPending(aeWithPolc))
 	assert.Equal(t, 2, len(pool.AllPendingEvidence()))
 	t.Log(pool.AllPendingEvidence())
+
+}
+
+// we forge a header trace where a bad validator has fooled a light client with a lunatic attack.
+func TestAddingAndExaminingConflictingHeadersTrace(t *testing.T) {
+	var (
+		val    = types.NewMockPV()
+		val2   = types.NewMockPV()    // bad validator
+		valSet = &types.ValidatorSet{ // 50/50 percent split in power
+			Validators: []*types.Validator{
+				val.ExtractIntoValidator(1),
+				val2.ExtractIntoValidator(1),
+			},
+			Proposer: val.ExtractIntoValidator(1),
+		}
+		height       = int64(10)
+		evidenceTime = time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+		stateDB      = dbm.NewMemDB()
+		blockStore   = store.NewBlockStore(dbm.NewMemDB())
+	)
+
+	sh := make([]*types.SignedHeader, int(height)/3)
+	lastCommit := &types.Commit{}
+	lastVals := valSet
+	vals := valSet
+	nextVals := valSet.CopyIncrementProposerPriority(1)
+	for i := int64(1); i < height; i++ {
+		state := sm.State{
+			ChainID:                     evidenceChainID,
+			InitialHeight:               1,
+			LastBlockHeight:             i - 1,
+			LastBlockTime:               evidenceTime.Add(time.Duration((i - 1) * 1000)),
+			Validators:                  vals,
+			NextValidators:              nextVals,
+			LastValidators:              lastVals,
+			LastHeightValidatorsChanged: 1,
+			ConsensusParams: tmproto.ConsensusParams{
+				Block: tmproto.BlockParams{
+					MaxBytes: 22020096,
+					MaxGas:   -1,
+				},
+				Evidence: tmproto.EvidenceParams{
+					MaxAgeNumBlocks:  20,
+					MaxAgeDuration:   48 * time.Hour,
+					MaxNum:           50,
+					ProofTrialPeriod: 1,
+				},
+			},
+		}
+		sm.SaveState(stateDB, state)
+		block, blockParts := state.MakeBlock(i, []types.Tx{tmrand.Bytes(20)}, lastCommit, nil,
+			vals.GetProposer().Address)
+
+		blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: blockParts.Header()}
+
+		voteA, err := makeSignedVote(i, 0, 1, val, blockID, evidenceTime.Add(time.Duration(i*1000)))
+		require.NoError(t, err)
+		commitSigA := voteA.CommitSig()
+		voteB, err := makeSignedVote(i, 0, 2, val2, blockID, evidenceTime.Add(time.Duration(i*1000)))
+		require.NoError(t, err)
+		commitSigB := voteB.CommitSig()
+
+		seenCommit := types.NewCommit(i, 0, blockID, []types.CommitSig{commitSigA, commitSigB})
+
+		// extract out every third signed header for the block to be part of the trace
+		// the last header we diverge.
+		if i%3 == 0 {
+			idx := i/3 - 1
+			if idx == 2 {
+				val3 := types.NewMockPV() // forged validator
+				forgedVals := &types.ValidatorSet{
+					Validators: []*types.Validator{
+						val2.ExtractIntoValidator(1),
+						val3.ExtractIntoValidator(1),
+					},
+					Proposer: val2.ExtractIntoValidator(1),
+				}
+
+				state := sm.State{
+					ChainID:                     evidenceChainID,
+					InitialHeight:               1,
+					LastBlockHeight:             i - 1,
+					LastBlockTime:               tmtime.Now(),
+					Validators:                  forgedVals,
+					NextValidators:              vals,
+					LastValidators:              forgedVals,
+					LastHeightValidatorsChanged: 1,
+					ConsensusParams: tmproto.ConsensusParams{
+						Block: tmproto.BlockParams{
+							MaxBytes: 22020096,
+							MaxGas:   -1,
+						},
+						Evidence: tmproto.EvidenceParams{
+							MaxAgeNumBlocks:  20,
+							MaxAgeDuration:   48 * time.Hour,
+							MaxNum:           50,
+							ProofTrialPeriod: 1,
+						},
+					},
+				}
+				altBlock, altBlockParts := state.MakeBlock(i, []types.Tx{tmrand.Bytes(20)}, lastCommit, nil,
+					vals.GetProposer().Address)
+				altBlockID := types.BlockID{Hash: altBlock.Hash(), PartSetHeader: altBlockParts.Header()}
+
+				secondVoteB, err := makeSignedVote(i, 0, 2, val2, altBlockID, evidenceTime.Add(time.Duration(i*1000)))
+				require.NoError(t, err)
+				commitSigB := secondVoteB.CommitSig()
+
+				voteC, err := makeSignedVote(i, 0, 1, val3, altBlockID, evidenceTime.Add(time.Duration(i*1000)))
+				require.NoError(t, err)
+				commitSigC := voteC.CommitSig()
+
+				altCommit := types.NewCommit(i, 0, altBlockID, []types.CommitSig{commitSigC, commitSigB})
+
+				sh[(i/3 - 1)] = &types.SignedHeader{
+					Header: &altBlock.Header,
+					Commit: altCommit,
+				}
+			} else {
+				sh[(i/3 - 1)] = &types.SignedHeader{
+					Header: &block.Header,
+					Commit: seenCommit,
+				}
+			}
+		}
+
+		blockStore.SaveBlock(block, blockParts, seenCommit)
+
+		vals = nextVals
+		lastVals = vals
+		nextVals = vals.CopyIncrementProposerPriority(1)
+		lastCommit = seenCommit
+	}
+
+	pool, err := NewPool(stateDB, dbm.NewMemDB(), blockStore)
+	require.NoError(t, err)
+
+	pool.SetLogger(log.TestingLogger())
+
+	trace := types.NewConflictingHeadersTrace(sh)
+
+	t.Log(trace)
+
+	err = trace.ValidateBasic()
+	require.NoError(t, err)
+
+	err = pool.EvaluateTrace(trace)
+	assert.NoError(t, err)
+	require.Equal(t, 1, len(pool.AllPendingEvidence()))
+	// assert that lunatic evidence has been created
+	lunaticEv := pool.AllPendingEvidence()[0]
+	str := "LunaticValidatorEvidence"
+	assert.Equal(t, str, lunaticEv.String()[:len(str)])
 
 }
 
@@ -576,4 +727,20 @@ func makeVote(height int64, round, index int32, addr bytes.HexBytes,
 		ValidatorAddress: addr,
 		ValidatorIndex:   index,
 	}
+}
+
+func makeSignedVote(height int64, round, index int32, privVal types.PrivValidator,
+	blockID types.BlockID, time time.Time) (*types.Vote, error) {
+	pubKey, err := privVal.GetPubKey()
+	if err != nil {
+		return nil, err
+	}
+	voteA := makeVote(height, round, index, pubKey.Address(), blockID, time)
+	vA := voteA.ToProto()
+	err = privVal.SignVote(evidenceChainID, vA)
+	if err != nil {
+		return nil, err
+	}
+	voteA.Signature = vA.Signature
+	return voteA, nil
 }

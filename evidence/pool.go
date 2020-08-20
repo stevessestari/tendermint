@@ -126,6 +126,89 @@ func (evpool *Pool) Update(block *types.Block, state sm.State) {
 	}
 }
 
+// AddEvidence checks the evidence is valid and adds it to the pool. If
+// evidence is composite (ConflictingHeadersEvidence), it will be broken up
+// into smaller pieces.
+func (evpool *Pool) AddEvidence(evidence types.Evidence) error {
+	evpool.logger.Debug("Attempting to add evidence", "ev", evidence)
+
+	if evpool.Has(evidence) {
+		// if it is an amnesia evidence we have but POLC is not absent then
+		// we should still process it
+		if ae, ok := evidence.(*types.AmnesiaEvidence); !ok || ae.Polc.IsAbsent() {
+			return fmt.Errorf("evidence %s already stored in evpool", evidence.String())
+		}
+	}
+
+	// A header needs to be fetched. For lunatic evidence this is so we can verify
+	// that some of the fields are different to the ones we have. For all evidence it
+	// it so we can verify that the time of the evidence is correct
+
+	var (
+		state  = evpool.State()
+		header *types.Header
+	)
+	// if the evidence is from the current height - this means the evidence is directly from the consensus
+	// and we won't have it in the block store. We thus check that the time isn't before the previous block
+	if evidence.Height() == state.LastBlockHeight+1 {
+		if evidence.Time().Before(state.LastBlockTime) {
+			return fmt.Errorf("evidence is from an earlier time than the previous block: %v < %v",
+				evidence.Time(),
+				evpool.state.LastBlockTime)
+		}
+		header = &types.Header{Time: evidence.Time()}
+	} else { // if the evidence is from a prior height
+		header = evpool.Header(evidence.Height())
+		if header == nil {
+			return fmt.Errorf("don't have header at height #%d", evidence.Height())
+		}
+	}
+
+	// 1) Verify against state.
+	if err := sm.VerifyEvidence(evpool.stateDB, state, evidence, header); err != nil {
+		evpool.logger.Debug("Inbound evidence is invalid", "evidence", evidence, "err", err)
+		return types.NewErrEvidenceInvalid(evidence, err)
+	}
+
+	// For potential amnesia evidence, if this node is indicted it shall retrieve a polc
+	// to form AmensiaEvidence else start the trial period for the piece of evidence
+	if pe, ok := evidence.(*types.PotentialAmnesiaEvidence); ok {
+		return evpool.handleInboundPotentialAmnesiaEvidence(pe)
+	}
+	if ae, ok := evidence.(*types.AmnesiaEvidence); ok {
+		// we have received an new amnesia evidence that we have never seen before so we must extract out the
+		// potential amnesia evidence part and run our own trial
+		if ae.Polc.IsAbsent() && ae.PotentialAmnesiaEvidence.VoteA.Round <
+			ae.PotentialAmnesiaEvidence.VoteB.Round {
+			return evpool.handleInboundPotentialAmnesiaEvidence(ae.PotentialAmnesiaEvidence)
+		}
+		// we are going to add this amnesia evidence as it's already punishable.
+		// We also check if we already have an amnesia evidence or potential
+		// amnesia evidence that addesses the same case that we will need to remove
+		aeWithoutPolc := types.NewAmnesiaEvidence(ae.PotentialAmnesiaEvidence, types.NewEmptyPOLC())
+		if evpool.IsPending(aeWithoutPolc) {
+			evpool.removePendingEvidence(aeWithoutPolc)
+		} else if evpool.IsOnTrial(ae.PotentialAmnesiaEvidence) {
+			key := keyAwaitingTrial(ae.PotentialAmnesiaEvidence)
+			if err := evpool.evidenceStore.Delete(key); err != nil {
+				evpool.logger.Error("Failed to remove potential amnesia evidence from database", "err", err)
+			}
+		}
+	}
+
+	// 2) Save to store.
+	if err := evpool.addPendingEvidence(evidence); err != nil {
+		return fmt.Errorf("database error when adding evidence: %w", err)
+	}
+
+	// 3) Add evidence to clist.
+	evpool.evidenceList.PushBack(evidence)
+
+	evpool.logger.Info("Verified new evidence of byzantine behavior", "evidence", evidence)
+
+	return nil
+}
+
 // AddPOLC adds a proof of lock change to the evidence database
 // that may be needed in the future to verify votes
 func (evpool *Pool) AddPOLC(polc *types.ProofOfLockChange) error {
@@ -141,113 +224,61 @@ func (evpool *Pool) AddPOLC(polc *types.ProofOfLockChange) error {
 	return evpool.evidenceStore.Set(key, polcBytes)
 }
 
-// AddEvidence checks the evidence is valid and adds it to the pool. If
-// evidence is composite (ConflictingHeadersEvidence), it will be broken up
-// into smaller pieces.
-func (evpool *Pool) AddEvidence(evidence types.Evidence) error {
-	var (
-		state  = evpool.State()
-		evList = []types.Evidence{evidence}
-	)
+// EvaluateTrace takes a trace of headers produced by a light client and tries to decompose it into
+// its respective evidence, adding it to the pool to be gossiped and committed.
+func (evpool *Pool) EvaluateTrace(trace *types.ConflictingHeadersTrace) error {
+	getBlockID := func(height int64) *types.BlockID {
+		blockMeta := evpool.blockStore.LoadBlockMeta(height)
+		if blockMeta == nil {
+			return nil
+		}
+		return &blockMeta.BlockID
+	}
 
-	evpool.logger.Debug("Attempting to add evidence", "ev", evidence)
+	// trawl though all the headers in the trace and compare with the nodes own headers to identify
+	// the point where the trace diverges.
+	commonHeader, divergedHeader, err := trace.Trawl(getBlockID)
+	switch err.(type) {
+	case *types.ErrInvalidTrace:
+		return err
+	case nil:
+	default:
+		evpool.logger.Debug("Error when evaluating trace", "err", err)
+		return nil
+	}
 
-	// valSet, err := sm.LoadValidators(evpool.stateDB, evidence.Height())
-	// if err != nil {
-	// 	return fmt.Errorf("can't load validators at height #%d: %w", evidence.Height(), err)
-	// }
+	// we need to fetch our own trusted signed header to examine divergence
+	trustedHeader := evpool.blockStore.LoadBlockMeta(divergedHeader.Height).Header
+	trustedCommit := evpool.blockStore.LoadBlockCommit(divergedHeader.Height)
+	trustedSignedHeader := &types.SignedHeader{
+		Header: &trustedHeader,
+		Commit: trustedCommit,
+	}
 
-	// Break composite evidence into smaller pieces.
-	// if ce, ok := evidence.(types.CompositeEvidence); ok {
-	// 	evpool.logger.Info("Breaking up composite evidence", "ev", evidence)
+	commonValSet, err := sm.LoadValidators(evpool.stateDB, commonHeader.Height)
+	if err != nil {
+		evpool.logger.Debug("Unable to retrieve validator set to evaludate trace", "height", commonHeader.Height, "err", err)
+		return err
+	}
 
-	// 	blockMeta := evpool.blockStore.LoadBlockMeta(evidence.Height())
-	// 	if blockMeta == nil {
-	// 		return fmt.Errorf("don't have block meta at height #%d", evidence.Height())
-	// 	}
-
-	// 	if err := ce.VerifyComposite(&blockMeta.Header, valSet); err != nil {
-	// 		return err
-	// 	}
-
-	// 	evList = ce.Split(&blockMeta.Header, valSet)
-	// }
+	// Examine divergent header with our own state and extract valid evidence
+	evList := types.ExamineHeaderDivergence(commonHeader, trustedSignedHeader, divergedHeader, commonValSet)
+	if len(evList) == 0 {
+		// If this is a correctly constructed light trace then there should be evidence of some malicious behaviour.
+		// If none exists then we should drop connection with peer.
+		return types.NewErrInvalidTrace("trace contained no malicious behavior")
+	}
 
 	for _, ev := range evList {
-
+		// 1) first check that the evidence isn't already stored in the pool
 		if evpool.Has(ev) {
-			// if it is an amnesia evidence we have but POLC is not absent then
-			// we should still process it
-			if ae, ok := ev.(*types.AmnesiaEvidence); !ok || ae.Polc.IsAbsent() {
-				continue
-			}
-		}
-
-		// A header needs to be fetched. For lunatic evidence this is so we can verify
-		// that some of the fields are different to the ones we have. For all evidence it
-		// it so we can verify that the time of the evidence is correct
-
-		var header *types.Header
-		// if the evidence is from the current height - this means the evidence is fresh from the consensus
-		// and we won't have it in the block store. We thus check that the time isn't before the previous block
-		if ev.Height() == evpool.State().LastBlockHeight+1 {
-			if ev.Time().Before(evpool.State().LastBlockTime) {
-				return fmt.Errorf("evidence is from an earlier time than the previous block: %v < %v",
-					ev.Time(),
-					evpool.State().LastBlockTime)
-			}
-			header = &types.Header{Time: ev.Time()}
-		} else { // if the evidence is from a prior height
-			header = evpool.Header(ev.Height())
-			if header == nil {
-				return fmt.Errorf("don't have header at height #%d", ev.Height())
-			}
-		}
-
-		// 1) Verify against state.
-		if err := sm.VerifyEvidence(evpool.stateDB, state, ev, header); err != nil {
-			evpool.logger.Debug("Inbound evidence is invalid", "evidence", ev, "err", err)
-			return types.NewErrEvidenceInvalid(ev, err)
-		}
-
-		// For potential amnesia evidence, if this node is indicted it shall retrieve a polc
-		// to form AmensiaEvidence else start the trial period for the piece of evidence
-		if pe, ok := ev.(*types.PotentialAmnesiaEvidence); ok {
-			if err := evpool.handleInboundPotentialAmnesiaEvidence(pe); err != nil {
-				return err
-			}
 			continue
-		} else if ae, ok := ev.(*types.AmnesiaEvidence); ok {
-			// we have received an new amnesia evidence that we have never seen before so we must extract out the
-			// potential amnesia evidence part and run our own trial
-			if ae.Polc.IsAbsent() && ae.PotentialAmnesiaEvidence.VoteA.Round <
-				ae.PotentialAmnesiaEvidence.VoteB.Round {
-				if err := evpool.handleInboundPotentialAmnesiaEvidence(ae.PotentialAmnesiaEvidence); err != nil {
-					return fmt.Errorf("failed to handle amnesia evidence, err: %w", err)
-				}
-				continue
-			} else {
-				// we are going to add this amnesia evidence as it's already punishable.
-				// We also check if we already have an amnesia evidence or potential
-				// amnesia evidence that addesses the same case that we will need to remove
-				aeWithoutPolc := types.NewAmnesiaEvidence(ae.PotentialAmnesiaEvidence, types.NewEmptyPOLC())
-				if evpool.IsPending(aeWithoutPolc) {
-					evpool.removePendingEvidence(aeWithoutPolc)
-				} else if evpool.IsOnTrial(ae.PotentialAmnesiaEvidence) {
-					key := keyAwaitingTrial(ae.PotentialAmnesiaEvidence)
-					if err := evpool.evidenceStore.Delete(key); err != nil {
-						evpool.logger.Error("Failed to remove potential amnesia evidence from database", "err", err)
-					}
-				}
-			}
 		}
-
-		// 2) Save to store.
+		// 2) attempt to add evidence into the pending evidence db
 		if err := evpool.addPendingEvidence(ev); err != nil {
-			return fmt.Errorf("database error when adding evidence: %v", err)
+			return fmt.Errorf("database error when adding evidence: %w", err)
 		}
-
-		// 3) Add evidence to clist.
+		// 3) add evidence to clist for broadcasting
 		evpool.evidenceList.PushBack(ev)
 
 		evpool.logger.Info("Verified new evidence of byzantine behavior", "evidence", ev)

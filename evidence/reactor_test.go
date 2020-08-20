@@ -20,7 +20,6 @@ import (
 	"github.com/tendermint/tendermint/evidence/mocks"
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/p2p"
-	ep "github.com/tendermint/tendermint/proto/tendermint/evidence"
 	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 	"github.com/tendermint/tendermint/proto/tendermint/version"
 	"github.com/tendermint/tendermint/types"
@@ -71,12 +70,12 @@ func makeAndConnectReactors(config *cfg.Config, stateDBs []dbm.DB) []*Reactor {
 }
 
 // wait for all evidence on all reactors
-func waitForEvidence(t *testing.T, evs types.EvidenceList, reactors []*Reactor) {
+func listenForEvidenceForAllReactors(t *testing.T, evs []types.Evidence, reactors []*Reactor) {
 	// wait for the evidence in all evpools
 	wg := new(sync.WaitGroup)
 	for i := 0; i < len(reactors); i++ {
 		wg.Add(1)
-		go _waitForEvidence(t, wg, evs, i, reactors)
+		go listenForEvidenceForSingleReactor(t, wg, evs, i, reactors)
 	}
 
 	done := make(chan struct{})
@@ -94,7 +93,7 @@ func waitForEvidence(t *testing.T, evs types.EvidenceList, reactors []*Reactor) 
 }
 
 // wait for all evidence on a single evpool
-func _waitForEvidence(
+func listenForEvidenceForSingleReactor(
 	t *testing.T,
 	wg *sync.WaitGroup,
 	evs types.EvidenceList,
@@ -122,7 +121,7 @@ func _waitForEvidence(
 	wg.Done()
 }
 
-func sendEvidence(t *testing.T, evpool *Pool, val types.PrivValidator, n int) types.EvidenceList {
+func sendEvidence(t *testing.T, evpool *Pool, val types.PrivValidator, n int) []types.Evidence {
 	evList := make([]types.Evidence, n)
 	for i := 0; i < n; i++ {
 		ev := types.NewMockDuplicateVoteEvidenceWithValidator(int64(i+1),
@@ -166,7 +165,8 @@ func TestReactorBroadcastEvidence(t *testing.T) {
 	// send a bunch of valid evidence to the first reactor's evpool
 	// and wait for them all to be received in the others
 	evList := sendEvidence(t, reactors[0].evpool, val, numEvidence)
-	waitForEvidence(t, evList, reactors)
+	assert.Equal(t, evList, reactors[0].evpool.AllPendingEvidence())
+	listenForEvidenceForAllReactors(t, evList, reactors)
 }
 
 type peerState struct {
@@ -208,7 +208,7 @@ func TestReactorSelectiveBroadcast(t *testing.T) {
 	evList := sendEvidence(t, reactors[0].evpool, val, numEvidence)
 
 	// only ones less than the peers height should make it through
-	waitForEvidence(t, evList[:numEvidence/2], reactors[1:2])
+	listenForEvidenceForAllReactors(t, evList[:numEvidence/2], reactors[1:2])
 
 	// peers should still be connected
 	peers := reactors[1].Switch.Peers().List()
@@ -262,38 +262,27 @@ func exampleHeader() *types.Header {
 }
 
 // nolint:lll //ignore line length for tests
-func TestEvidenceVectors(t *testing.T) {
+func TestEncodeEvidenceVectors(t *testing.T) {
 
 	dupl := types.NewDuplicateVoteEvidence(exampleVote(1), exampleVote(2), time.Date(2019, 10, 13, 16, 14, 44, 0, time.UTC))
 	lve := types.NewLunaticValidatorEvidence(exampleHeader(), exampleVote(1), "Datahash", 1, time.Date(2019, 10, 13, 16, 14, 44, 0, time.UTC))
 
 	testCases := []struct {
-		testName     string
-		evidenceList []types.Evidence
-		expBytes     string
+		testName string
+		evidence types.Evidence
+		expBytes string
 	}{
-		{"DuplicateVoteEvidence", []types.Evidence{dupl}, "0a81020afe010a79080210031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031279080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031a0608f49a8ded05"},
-		{"LunaticValidatorEvidence", []types.Evidence{lve}, "0ade031adb030acb020a04080110021207636861696e49641803220608f49a8ded052a0a0a01001205087b1201003220e7aad01a1af897b05bcf78c7563b5d1adc2939d543dac949a5c8712156d19bf83a206d6e28b8b98b5327042ea50a57dd46e6cc851c72e528bdeaa6efdeeefe66a0b84220db5d0767f57d844ba68132eaf74f6b8b83df6c03810a6a4378c2a6b2caf93e8d4a201eef9748a3c48ff996033757d73200886e7b2b4e9d9df07b19a34a44bae3e2c85220e5e566c41ed57e3ff8cc10f184178788b8faa602b07cf1f425217bd8179f1f245a2041cafae31cc70f5801fa1016a2dd54a9bcb8201b5b389919fe9976762532c5166220092e058630247ed6009863a12eee117d26cd9d08b5adcaab37f2ab35db475a376a2073865db08f49d58428905d389ab4ca4b96e45a3206c7a69d43a5dc7372e60714721427834082c131975497cdebfbdce6c8e5196a13541279080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031a084461746168617368220608f49a8ded05"},
+		{"DuplicateVoteEvidence", dupl, "0a81020afe010a79080210031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031279080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031a0608f49a8ded05"},
+		{"LunaticValidatorEvidence", lve, "0ade0312db030acb020a04080110021207636861696e49641803220608f49a8ded052a0a0a01001205087b1201003220e7aad01a1af897b05bcf78c7563b5d1adc2939d543dac949a5c8712156d19bf83a206d6e28b8b98b5327042ea50a57dd46e6cc851c72e528bdeaa6efdeeefe66a0b84220db5d0767f57d844ba68132eaf74f6b8b83df6c03810a6a4378c2a6b2caf93e8d4a201eef9748a3c48ff996033757d73200886e7b2b4e9d9df07b19a34a44bae3e2c85220e5e566c41ed57e3ff8cc10f184178788b8faa602b07cf1f425217bd8179f1f245a2041cafae31cc70f5801fa1016a2dd54a9bcb8201b5b389919fe9976762532c5166220092e058630247ed6009863a12eee117d26cd9d08b5adcaab37f2ab35db475a376a2073865db08f49d58428905d389ab4ca4b96e45a3206c7a69d43a5dc7372e60714721427834082c131975497cdebfbdce6c8e5196a13541279080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031a084461746168617368220608f49a8ded05"},
 	}
 
 	for _, tc := range testCases {
 		tc := tc
 
-		evi := make([]*tmproto.Evidence, len(tc.evidenceList))
-		for i := 0; i < len(tc.evidenceList); i++ {
-			ev, err := types.EvidenceToProto(tc.evidenceList[i])
-			require.NoError(t, err, tc.testName)
-			evi[i] = ev
-		}
-
-		epl := ep.List{
-			Evidence: evi,
-		}
-
-		bz, err := epl.Marshal()
+		evBytes, err := encodeMsg(tc.evidence)
 		require.NoError(t, err, tc.testName)
 
-		require.Equal(t, tc.expBytes, hex.EncodeToString(bz), tc.testName)
+		require.Equal(t, tc.expBytes, hex.EncodeToString(evBytes), tc.testName)
 
 	}
 

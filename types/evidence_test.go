@@ -21,7 +21,11 @@ type voteData struct {
 	valid bool
 }
 
-var defaultVoteTime = time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+var (
+	defaultVoteTime = time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+	defaultHeight int64 = 1
+	defaultEvidenceChainID = "evidence_test_chain"
+)
 
 func TestDuplicateVoteEvidence(t *testing.T) {
 	val := NewMockPV()
@@ -256,76 +260,124 @@ func TestLunaticValidatorEvidence(t *testing.T) {
 
 }
 
-// TODO: rewrite conflicting header trace
-// func TestConflictingHeadersEvidence(t *testing.T) {
-// 	const (
-// 		chainID       = "TestConflictingHeadersEvidence"
-// 		height  int64 = 37
-// 	)
+func TestConflictingHeadersTrace(t *testing.T) {
+	const (
+		chainID       = "TestConflictingHeadersEvidence"
+		height  int64 = 37
+	)
 
-// 	var (
-// 		blockID = makeBlockIDRandom()
-// 		header1 = makeHeaderRandom()
-// 		header2 = makeHeaderRandom()
-// 	)
+	var (
+		lastBlockID = makeBlockIDRandom()
+		header1 = makeHeaderRandom()
+		header2 = makeHeaderRandom()
+	)
 
-// 	header1.Height = height
-// 	header1.LastBlockID = blockID
-// 	header1.ChainID = chainID
+	header1.Height = height
+	header1.LastBlockID = lastBlockID
+	header1.ChainID = chainID
 
-// 	header2.Height = height
-// 	header2.LastBlockID = blockID
-// 	header2.ChainID = chainID
+	header2.Height = height + 1
+	header2.LastBlockID = lastBlockID
+	header2.ChainID = chainID
 
-// 	voteSet1, valSet, vals := randVoteSet(height, 1, tmproto.PrecommitType, 10, 1)
-// 	voteSet2 := NewVoteSet(chainID, height, 1, tmproto.PrecommitType, valSet)
+	voteSet1, valSet, vals := randVoteSet(height, 1, tmproto.PrecommitType, 10, 1)
+	voteSet2 := NewVoteSet(chainID, height + 1, 1, tmproto.PrecommitType, valSet)
 
-// 	commit1, err := MakeCommit(BlockID{
-// 		Hash: header1.Hash(),
-// 		PartSetHeader: PartSetHeader{
-// 			Total: 100,
-// 			Hash:  crypto.CRandBytes(tmhash.Size),
-// 		},
-// 	}, height, 1, voteSet1, vals, time.Now())
-// 	require.NoError(t, err)
-// 	commit2, err := MakeCommit(BlockID{
-// 		Hash: header2.Hash(),
-// 		PartSetHeader: PartSetHeader{
-// 			Total: 100,
-// 			Hash:  crypto.CRandBytes(tmhash.Size),
-// 		},
-// 	}, height, 1, voteSet2, vals, time.Now())
-// 	require.NoError(t, err)
+	commit1, err := MakeCommit(BlockID{
+		Hash: header1.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, height, 1, voteSet1, vals, defaultVoteTime)
+	require.NoError(t, err)
+	commit2, err := MakeCommit(BlockID{
+		Hash: header2.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, height + 1, 1, voteSet2, vals, defaultVoteTime)
+	require.NoError(t, err)
 
-// 	h1 := &SignedHeader{
-// 		Header: header1,
-// 		Commit: commit1,
-// 	}
-// 	h2 := &SignedHeader{
-// 		Header: header2,
-// 		Commit: commit2,
-// 	}
+	h1 := &SignedHeader{
+		Header: header1,
+		Commit: commit1,
+	}
+	h2 := &SignedHeader{
+		Header: header2,
+		Commit: commit2,
+	}
 
-// 	ev := NewConflictingHeadersEvidence(h1, h2)
+	// Test Validate Basic and minor functions
+	goodTrace := NewConflictingHeadersTrace([]*SignedHeader{h1, h2})
 
-// 	assert.Panics(t, func() {
-// 		ev.Address()
-// 	})
-
-// 	assert.Panics(t, func() {
-// 		pubKey, _ := vals[0].GetPubKey()
-// 		ev.Verify(chainID, pubKey)
-// 	})
-
-// 	assert.Equal(t, height, ev.Height())
-// 	assert.Equal(t, ev.H2.Time, ev.Time())
-// 	assert.NotEmpty(t, ev.Hash())
-// 	assert.NotEmpty(t, ev.Bytes())
-// 	assert.NoError(t, ev.VerifyComposite(header1, valSet))
-// 	assert.True(t, ev.Equal(ev))
-// 	assert.NoError(t, ev.ValidateBasic())
-// 	assert.NotEmpty(t, ev.String())
-// }
+	err = goodTrace.ValidateBasic()
+	assert.NoError(t, err)
+	assert.NotNil(t, goodTrace.Bytes())
+	assert.NotNil(t, goodTrace.Hash())
+	assert.NotNil(t, goodTrace.String())
+	
+	badTraces := []*ConflictingHeadersTrace{
+		{ Headers: []*SignedHeader{h2, h1}, }, // incorrect height odering
+		{ Headers: []*SignedHeader{h1, nil, h2}, },// missing header
+		{ Headers: []*SignedHeader{h1, {Header: header2, Commit: commit1}}, }, // invalid signed header
+		{Headers: nil}, // empty headers
+		{}, // empty trace
+		{Headers: []*SignedHeader{h1}}, //just a single header
+	}
+	
+	for idx, trace := range badTraces {
+		err := trace.ValidateBasic()
+		assert.Error(t, err, idx)
+	}
+	
+	blockID := &BlockID {
+		Hash: header1.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}
+	
+	getBlockID := func(height int64) *BlockID {
+		return blockID
+	}
+	
+	// Test Trawl function
+	commonHeader, divergedHeader, err := goodTrace.Trawl(getBlockID)
+	assert.NoError(t, err)
+	assert.Equal(t, h1, commonHeader)
+	assert.Equal(t, h2, divergedHeader)
+	
+	wrongGetBlockID := func(height int64) *BlockID {
+		blockID.Hash = header2.Hash()
+		return blockID
+	}
+	
+	commonHeader, divergedHeader, err = goodTrace.Trawl(wrongGetBlockID)
+	if assert.Error(t, err) {
+		assert.Equal(t, "the first header in the trace does not match", err.Error())
+	}
+	assert.Nil(t, commonHeader)
+	assert.Nil(t, divergedHeader)
+	
+	wrongGetBlockID2 := func(h int64) *BlockID {
+		if h == height {
+			blockID.Hash = header1.Hash()
+		} else {
+			blockID.Hash = header2.Hash()
+		}
+		return blockID
+	}
+	
+	commonHeader, divergedHeader, err = goodTrace.Trawl(wrongGetBlockID2)
+	if assert.Error(t, err) {
+		assert.Equal(t, "the last header in the trace should not match", err.Error())
+	}
+	
+	
+}
 
 func TestPotentialAmnesiaEvidence(t *testing.T) {
 	const (
@@ -603,9 +655,9 @@ func makeVote(
 
 func makeHeaderRandom() *Header {
 	return &Header{
-		ChainID:            tmrand.Str(12),
+		ChainID:            defaultEvidenceChainID,
 		Height:             int64(tmrand.Uint16()) + 1,
-		Time:               time.Now(),
+		Time:               defaultVoteTime,
 		LastBlockID:        makeBlockIDRandom(),
 		LastCommitHash:     crypto.CRandBytes(tmhash.Size),
 		DataHash:           crypto.CRandBytes(tmhash.Size),
@@ -631,47 +683,10 @@ func TestEvidenceProto(t *testing.T) {
 	// -------- SignedHeaders --------
 	const height int64 = 37
 
-	var (
-		header1 = makeHeaderRandom()
-		header2 = makeHeaderRandom()
-	)
-
+	header1 := makeHeaderRandom()
 	header1.Height = height
 	header1.LastBlockID = blockID
 	header1.ChainID = chainID
-
-	header2.Height = height
-	header2.LastBlockID = blockID
-	header2.ChainID = chainID
-
-	// voteSet1, valSet, vals := randVoteSet(height, 1, tmproto.PrecommitType, 10, 1)
-	// voteSet2 := NewVoteSet(chainID, height, 1, tmproto.PrecommitType, valSet)
-
-	// commit1, err := MakeCommit(BlockID{
-	// 	Hash: header1.Hash(),
-	// 	PartSetHeader: PartSetHeader{
-	// 		Total: 100,
-	// 		Hash:  crypto.CRandBytes(tmhash.Size),
-	// 	},
-	// }, height, 1, voteSet1, vals, time.Now())
-	// require.NoError(t, err)
-	// commit2, err := MakeCommit(BlockID{
-	// 	Hash: header2.Hash(),
-	// 	PartSetHeader: PartSetHeader{
-	// 		Total: 100,
-	// 		Hash:  crypto.CRandBytes(tmhash.Size),
-	// 	},
-	// }, height, 1, voteSet2, vals, time.Now())
-	// require.NoError(t, err)
-
-	// h1 := &SignedHeader{
-	// 	Header: header1,
-	// 	Commit: commit1,
-	// }
-	// h2 := &SignedHeader{
-	// 	Header: header2,
-	// 	Commit: commit2,
-	// }
 
 	tests := []struct {
 		testName     string
@@ -684,10 +699,6 @@ func TestEvidenceProto(t *testing.T) {
 		{"DuplicateVoteEvidence nil voteB", &DuplicateVoteEvidence{VoteA: v, VoteB: nil}, false, true},
 		{"DuplicateVoteEvidence nil voteA", &DuplicateVoteEvidence{VoteA: nil, VoteB: v}, false, true},
 		{"DuplicateVoteEvidence success", &DuplicateVoteEvidence{VoteA: v2, VoteB: v}, false, false},
-		// {"ConflictingHeadersEvidence empty fail", &ConflictingHeadersEvidence{}, false, true},
-		// {"ConflictingHeadersEvidence nil H2", &ConflictingHeadersEvidence{H1: h1, H2: nil}, false, true},
-		// {"ConflictingHeadersEvidence nil H1", &ConflictingHeadersEvidence{H1: nil, H2: h2}, false, true},
-		// {"ConflictingHeadersEvidence success", &ConflictingHeadersEvidence{H1: h1, H2: h2}, false, false},
 		{"LunaticValidatorEvidence success", &LunaticValidatorEvidence{Header: header1,
 			Vote: v, InvalidHeaderField: "ValidatorsHash"}, false, true},
 		{"&LunaticValidatorEvidence empty fail", &LunaticValidatorEvidence{}, false, true},
@@ -723,6 +734,76 @@ func TestEvidenceProto(t *testing.T) {
 				return
 			}
 			require.Equal(t, tt.evidence, evi, tt.testName)
+		})
+	}
+}
+
+func TestConflictingHeadersTraceProtoBuf(t *testing.T) {
+	var (
+		header1 = makeHeaderRandom()
+		header2 = makeHeaderRandom()
+	)
+	
+	blockID := makeBlockID(tmhash.Sum([]byte("blockhash")), math.MaxInt32, tmhash.Sum([]byte("partshash")))
+
+	header1.Height = defaultHeight
+	header1.LastBlockID = blockID
+	header1.ChainID = defaultEvidenceChainID
+
+	header2.Height = defaultHeight + 1
+	header2.LastBlockID = blockID
+	header2.ChainID = defaultEvidenceChainID
+
+	voteSet1, valSet, vals := randVoteSet(defaultHeight, 1, tmproto.PrecommitType, 10, 1)
+	voteSet2 := NewVoteSet(defaultEvidenceChainID, defaultHeight + 1, 1, tmproto.PrecommitType, valSet)
+
+	commit1, err := MakeCommit(BlockID{
+		Hash: header1.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, defaultHeight, 1, voteSet1, vals, time.Now())
+	require.NoError(t, err)
+	commit2, err := MakeCommit(BlockID{
+		Hash: header2.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, defaultHeight + 1, 1, voteSet2, vals, time.Now())
+	require.NoError(t, err)
+
+	h1 := &SignedHeader{
+		Header: header1,
+		Commit: commit1,
+	}
+	h2 := &SignedHeader{
+		Header: header2,
+		Commit: commit2,
+	}
+
+	tests := []struct {
+		testName     string
+		trace        *ConflictingHeadersTrace
+		fromProtoErr bool
+	}{
+		{"ConflictingHeadersTrace empty fail", &ConflictingHeadersTrace{}, true},
+		{"ConflictingHeadersTrace has nil header", &ConflictingHeadersTrace{Headers: []*SignedHeader{h1, nil}}, true},
+		{"ConflictingHeadersTrace has nil headers", &ConflictingHeadersTrace{Headers: nil}, true},
+		{"ConflictingHeadersTrace success", &ConflictingHeadersTrace{Headers: []*SignedHeader{h1, h2}}, false},
+	}
+	
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.testName, func(t *testing.T) {
+			pb := tt.trace.ToProto()
+			evi, err := ConflictingHeadersTraceFromProto(pb)
+			if tt.fromProtoErr {
+				assert.Error(t, err, tt.testName)
+				return
+			}
+			require.Equal(t, tt.trace, evi, tt.testName)
 		})
 	}
 }
@@ -767,4 +848,89 @@ func TestProofOfLockChangeProtoBuf(t *testing.T) {
 			assert.Error(t, err, tc.msg)
 		}
 	}
+}
+
+func TestCheckForLunaticAttack(t *testing.T) {
+	const (
+		commonHeight int64 = 22
+		divergentHeight int64 = 29
+	)
+	voteSetTrusted, valSet, vals := randVoteSet(divergentHeight, 1, tmproto.PrecommitType, 4, 1)
+	phantomVal, phantomPrivVal := RandValidator(false, 2)
+	forgedVals := append(valSet.Copy().Validators[:2], phantomVal)
+	forgedValSet := NewValidatorSet(forgedVals)
+	forgedPrivVals := append(vals[:2], phantomPrivVal)
+	voteSetDiverged := NewVoteSet(defaultEvidenceChainID, divergentHeight, 1, tmproto.PrecommitType, forgedValSet)
+	
+	h1 := makeHeaderRandom()
+	h1.Height = commonHeight
+	h2 := &Header{
+		ChainID:            defaultEvidenceChainID,
+		Height:             divergentHeight,
+		Time:               defaultVoteTime,
+		LastBlockID:        makeBlockIDRandom(),
+		LastCommitHash:     crypto.CRandBytes(tmhash.Size),
+		DataHash:           crypto.CRandBytes(tmhash.Size),
+		ValidatorsHash:     valSet.Hash(),
+		NextValidatorsHash: valSet.Hash(),
+		ConsensusHash:      crypto.CRandBytes(tmhash.Size),
+		AppHash:            crypto.CRandBytes(tmhash.Size),
+		LastResultsHash:    crypto.CRandBytes(tmhash.Size),
+		EvidenceHash:       crypto.CRandBytes(tmhash.Size),
+		ProposerAddress:    crypto.CRandBytes(crypto.AddressSize),
+	}
+	h3 := &Header{
+		ChainID:            defaultEvidenceChainID,
+		Height:             divergentHeight,
+		Time:               defaultVoteTime,
+		LastBlockID:        h2.LastBlockID,
+		LastCommitHash:     h2.LastCommitHash,
+		DataHash:           h2.DataHash,
+		ValidatorsHash:     forgedValSet.Hash(),
+		NextValidatorsHash: forgedValSet.Hash(),
+		ConsensusHash:      h2.ConsensusHash,
+		AppHash:            h2.AppHash,
+		LastResultsHash:    h2.LastResultsHash,
+		EvidenceHash:       h2.EvidenceHash,
+		ProposerAddress:    h2.ProposerAddress,
+	}
+	t.Log(voteSetTrusted)
+	t.Log(vals)
+	trustedCommit, err := MakeCommit(BlockID{
+		Hash: h2.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, divergentHeight, 1, voteSetTrusted, vals, time.Now())
+	require.NoError(t, err)
+	
+	t.Log(phantomPrivVal)
+	t.Log(vals)
+	t.Log(forgedPrivVals)
+	divergedCommit, err := MakeCommit(BlockID{
+		Hash: h3.Hash(),
+		PartSetHeader: PartSetHeader{
+			Total: 100,
+			Hash:  crypto.CRandBytes(tmhash.Size),
+		},
+	}, divergentHeight, 1, voteSetDiverged, forgedPrivVals, time.Now())
+	require.NoError(t, err)
+	
+	
+	commonHeader := &SignedHeader{
+		Header: h1,
+		Commit: trustedCommit,
+	}
+	trustedHeader := &SignedHeader{
+		Header: h2,
+		Commit: trustedCommit,
+	}
+	divergedHeader := &SignedHeader{
+		Header: h3,
+		Commit: divergedCommit,
+	}
+	
+	evidence := CheckForLunaticAttack(commonHeader, trustedHeader, divergedHeader, valSet)
+	assert.Equal(t, 2, len(evidence))
 }
