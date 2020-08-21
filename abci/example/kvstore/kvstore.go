@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	dbm "github.com/tendermint/tm-db"
 
@@ -87,12 +88,20 @@ func (app *Application) Info(req types.RequestInfo) (resInfo types.ResponseInfo)
 
 // tx is either "key=value" or just arbitrary bytes
 func (app *Application) DeliverTx(req types.RequestDeliverTx) types.ResponseDeliverTx {
-	var key, value []byte
+	var key, value, db, firstName, lastName, id, isDeleted, currentTimeB []byte
+	var currentTime = time.Now()
+	var currentTimeS = currentTime.Format("2006-01-02 15:04:05")
+
 	parts := bytes.Split(req.Tx, []byte("="))
-	if len(parts) == 2 {
-		key, value = parts[0], parts[1]
-	} else {
+	partsEvents := bytes.Split(req.Tx, []byte("."))
+	if len(parts) < 2 && len(partsEvents) == 5 {
 		key, value = req.Tx, req.Tx
+		db, firstName, lastName, id, isDeleted = partsEvents[0], partsEvents[1], partsEvents[2], partsEvents[3], partsEvents[4]
+		currentTimeB = []byte(currentTimeS)
+	} else {
+		key, value = []byte("badFormatOrigin"), []byte("badFormatOrigin")
+		db, firstName, lastName, id, isDeleted = []byte("badFormatOrigin"), []byte("badFormatOrigin"), []byte("badFormatOrigin"), []byte("badFormatOrigin"), []byte("badFormatOrigin")
+		currentTimeB = []byte("badFormatOrigin")
 	}
 
 	err := app.state.db.Set(prefixKey(key), value)
@@ -105,10 +114,13 @@ func (app *Application) DeliverTx(req types.RequestDeliverTx) types.ResponseDeli
 		{
 			Type: "app",
 			Attributes: []types.EventAttribute{
-				{Key: []byte("creator"), Value: []byte("Cosmoshi Netowoko"), Index: true},
+				{Key: []byte("db"), Value: db, Index: true},
+				{Key: []byte("firstName"), Value: firstName, Index: true},
+				{Key: []byte("lastName"), Value: lastName, Index: true},
+				{Key: []byte("id"), Value: id, Index: true},
+				{Key: []byte("isDeleted"), Value: isDeleted, Index: true},
+				{Key: []byte("timestamp"), Value: currentTimeB, Index: true},
 				{Key: []byte("key"), Value: key, Index: true},
-				{Key: []byte("index_key"), Value: []byte("index is working"), Index: true},
-				{Key: []byte("noindex_key"), Value: []byte("index is working"), Index: false},
 			},
 		},
 	}
